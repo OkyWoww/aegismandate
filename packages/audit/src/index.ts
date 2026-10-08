@@ -4,22 +4,26 @@ import type { AuditEvent } from '@mandatepay/schemas';
 export const GENESIS_HASH = '0'.repeat(64);
 
 /**
- * Computes sha256 hash chaining previousHash + sequenceNumber + timestamp + serialized payload
+ * Computes sha256 hash chaining prev_hash + canonical_json per spec.md §3.5
+ * hash = sha256(prev_hash || canonical_json(seq,ts,actor,type,ref,payload))
  */
 export function computeEventHash(
-  previousHash: string,
-  sequenceNumber: number,
-  eventType: string,
-  timestamp: string,
-  payload: Record<string, unknown>
+  prevHash: string,
+  seq: number,
+  ts: string,
+  actor: string,
+  type: string,
+  ref: string,
+  payload: Record<string, unknown>,
 ): string {
-  const content = JSON.stringify({
-    previousHash,
-    sequenceNumber,
-    eventType,
-    timestamp,
+  const content = `${prevHash}||${JSON.stringify({
+    seq,
+    ts,
+    actor,
+    type,
+    ref,
     payload,
-  });
+  })}`;
   return createHash('sha256').update(content).digest('hex');
 }
 
@@ -33,23 +37,25 @@ export function verifyLedgerIntegrity(events: readonly AuditEvent[]): { valid: b
     const event = events[i];
     if (!event) continue;
 
-    if (event.previousHash !== expectedPrevHash) {
+    if (event.prev_hash !== expectedPrevHash) {
       return { valid: false, brokenAtIndex: i };
     }
 
     const calculated = computeEventHash(
-      event.previousHash,
-      event.sequenceNumber,
-      event.eventType,
-      event.timestamp,
-      event.payload
+      event.prev_hash,
+      event.seq,
+      event.ts,
+      event.actor,
+      event.type,
+      event.ref,
+      event.payload,
     );
 
-    if (calculated !== event.currentHash) {
+    if (calculated !== event.hash) {
       return { valid: false, brokenAtIndex: i };
     }
 
-    expectedPrevHash = event.currentHash;
+    expectedPrevHash = event.hash;
   }
 
   return { valid: true };

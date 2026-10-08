@@ -107,8 +107,8 @@ mandatepay/
 |---|---|:---:|---|
 | **T-001** | **Repo Bootstrap** | 🟢 COMPLETED | Monorepo layout, strict TS, ESLint boundaries (`agent` ↛ `paypal`), CI |
 | **T-002** | **PayPal Sandbox Spike** | 🟢 COMPLETED | Orders v2 typed client, Webhook verify, Vault spike, Plan B LOCKED |
-| **T-003** | **Shared Schemas (Zod)** | 🟡 READY | Strict Zod schemas for Mandate, Proposal, Decision, Audit |
-| **T-004** | **Audit Ledger Package** | 🟡 PENDING | Hash-chained ledger (`better-sqlite3`, WAL mode, BEGIN IMMEDIATE) |
+| **T-003** | **Shared Schemas (Zod)** | 🟢 COMPLETED | Strict Zod schemas for Mandate, Proposal, Decision, Audit (`spec.md §3`) |
+| **T-004** | **Audit Ledger Package** | 🟡 READY | Hash-chained ledger (`better-sqlite3`, WAL mode, BEGIN IMMEDIATE) |
 | **T-005** | **Mandate Service** | 🟡 PENDING | Lifecycle management (create, activate, revoke, suspend), HMAC-SHA256 |
 | **T-006** | **Demo Store & Catalog** | 🟡 PENDING | Deterministic merchants, categories, and relative-clock seed script |
 | **T-007** | **Golden Path End-to-End**| 🟡 PENDING | Scripted intent → policy → reservation → PayPal create/capture |

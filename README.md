@@ -105,18 +105,25 @@ mandatepay/
 
 | Task ID | Component / Milestone | Status | Description |
 |---|---|:---:|---|
-| **T-001** | **Repo Bootstrap** | 🟢 COMPLETED | Monorepo layout, strict TS, ESLint boundaries, workspace config |
-| **T-002** | **Schemas & Contracts** | 🟡 READY | Zod definitions for Mandates, PurchaseIntents, and Ledger events |
-| **T-003** | **Pure Policy Engine** | 🟡 READY | Pure evaluation function: budget limits, merchant whitelist, expiry |
-| **T-004** | **Tamper Ledger** | 🟡 READY | Cryptographic hash chaining (`sha256`) and SQLite persistence |
-| **T-005** | **Advisory Scanner** | 🟡 READY | Heuristic detector for indirect prompt injection in scraped store pages |
-| **T-006** | **PayPal Sandbox Client**| 🟡 READY | Orders v2 typed client (`createOrder`, `captureOrder`, webhook verify) |
-| **T-007** | **Control Plane API** | 🟡 READY | Fastify HTTP endpoints: `/mandates`, `/evaluate`, `/capture`, `/audit` |
-| **T-008** | **Autonomous Agent** | 🟡 READY | Shopper runtime interacting with merchants and intent pipeline |
-| **T-009** | **Mock Storefronts** | 🟡 READY | Legit e-commerce catalog + Adversarial store with payload injection |
-| **T-010** | **Attack Suite Harness**| 🟡 READY | 12 automated attack test cases (A-01 to A-12) proving policy defense |
-| **T-011** | **Operator Dashboard** | 🟡 READY | Real-time React dashboard visualizing ledger, mandates, and live agent |
-| **T-012** | **Judge Verification** | 🟡 READY | Single command verify script for clean environment replication |
+| **T-001** | **Repo Bootstrap** | 🟢 COMPLETED | Monorepo layout, strict TS, ESLint boundaries (`agent` ↛ `paypal`), CI |
+| **T-002** | **PayPal Sandbox Spike** | 🟢 COMPLETED | Orders v2 typed client, Webhook verify, Vault spike, Plan B LOCKED |
+| **T-003** | **Shared Schemas (Zod)** | 🟡 READY | Strict Zod schemas for Mandate, Proposal, Decision, Audit |
+| **T-004** | **Audit Ledger Package** | 🟡 PENDING | Hash-chained ledger (`better-sqlite3`, WAL mode, BEGIN IMMEDIATE) |
+| **T-005** | **Mandate Service** | 🟡 PENDING | Lifecycle management (create, activate, revoke, suspend), HMAC-SHA256 |
+| **T-006** | **Demo Store & Catalog** | 🟡 PENDING | Deterministic merchants, categories, and relative-clock seed script |
+| **T-007** | **Golden Path End-to-End**| 🟡 PENDING | Scripted intent → policy → reservation → PayPal create/capture |
+
+### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
+
+- **Real & Production-Hardened**:
+  - **Deterministic Policy Gating**: Real, pure functional policy engine validating limits, payee registries, item counts, budget reservations, and signature integrity.
+  - **Security Boundary**: Hard architectural barrier enforced at compile-time and lint-time preventing cognitive agent processes from accessing payment credentials or PayPal SDKs.
+  - **Audit Integrity**: Cryptographic hash chaining (`sha256(prev_hash || canonical_json)`) over all transactions and lifecycle state changes.
+  - **PayPal Orders v2 Client**: Typed integration for OAuth client credentials, order creation (`intent: CAPTURE`), order lookup, order capture, and webhook signature verification (`/v1/notifications/verify-webhook-signature`).
+  - **Plan B Authorization Architecture**: As determined during T-002, default sandbox accounts lack unapproved Reference Transactions / Vault permissions. In-mandate approvals generate an order with server-verified payees and amounts, with the buyer completing checkout via PayPal's approved link (`rel: approve`).
+- **Simulated / Advisory**:
+  - **Advisory Prompt Injection Scanner**: Evaluates heuristic patterns and Unicode anomalies; explicitly marked as advisory defense-in-depth and never the sole barrier to payment attacks.
+  - **Attack Suite Runner**: Replays 12 deterministic attack vectors (A-01 through A-12) locally to verify fail-closed policy gating prior to any PayPal network calls.
 
 ---
 

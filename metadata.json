@@ -1,0 +1,6 @@
+{
+  "name": "MandatePay",
+  "description": "A mandate-based control plane for agentic commerce submitted to the PayPal AI Hackathon, isolating untrusted cognitive agents from payment tokens with cryptographically verified limits and audit ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

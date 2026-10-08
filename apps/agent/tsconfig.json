@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "references": [
+    { "path": "../../packages/schemas" },
+    { "path": "../../packages/scanner" }
+  ],
+  "include": ["src/**/*"]
+}

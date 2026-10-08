@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/schemas" },
+    { "path": "./packages/policy" },
+    { "path": "./packages/audit" },
+    { "path": "./packages/scanner" },
+    { "path": "./packages/paypal" },
+    { "path": "./packages/sim" },
+    { "path": "./apps/api" },
+    { "path": "./apps/agent" },
+    { "path": "./apps/stores" },
+    { "path": "./apps/web" }
+  ]
+}

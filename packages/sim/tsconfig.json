@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "references": [
+    { "path": "../schemas" },
+    { "path": "../policy" },
+    { "path": "../audit" },
+    { "path": "../scanner" }
+  ],
+  "include": ["src/**/*"]
+}

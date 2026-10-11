@@ -114,7 +114,8 @@ mandatepay/
 | **T-007** | **Golden Path End-to-End**| 🟢 COMPLETED | Scripted intent → policy → reservation → PayPal create/capture (20/20 reliability) |
 | **T-008** | **Executor Hardening**    | 🟢 COMPLETED | Idempotency keys, retries, polling fallback, payload-hash check, TOCTOU recheck |
 | **T-009** | **Full Policy Engine**    | 🟢 COMPLETED | Full policy engine P-00..P-12, pure function, precedence (`Phase 2`) |
-| **T-010** | **Deep Key Scan & Values**| 🟡 READY | Deep scan + strict schemas + prototype pollution + value constraints |
+| **T-010** | **Advisory Scanner**     | 🟢 COMPLETED | Prompt injection & advisory risk heuristics (`spec.md §5, §6`, `Phase 2`) |
+| **T-011** | **Pending Cap & Races**  | 🟡 READY     | Pending-approval cap + reservation accounting + concurrency (`Phase 2`) |
 
 ### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
 

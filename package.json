@@ -15,6 +15,7 @@
     "lint": "eslint . --ext .ts,.tsx,.js,.cjs",
     "test": "vitest run",
     "test:live-paypal": "tsx scripts/live-sandbox-test.ts",
+    "test:paypal-capture-proof": "tsx scripts/paypal-capture-proof.ts",
     "attack-suite": "vitest run packages/sim",
     "smoke": "tsx scripts/smoke.ts",
     "seed": "tsx scripts/seed.ts",

@@ -50,7 +50,7 @@ async function runLiveSandboxProof() {
   const t1 = Date.now();
   const token = await client.getAccessToken();
   const d1 = Date.now() - t1;
-  const redactedToken = token.substring(0, 12) + '...' + token.slice(-6);
+  const redactedToken = '[REDACTED]';
   results.push({
     step: 'OAuth 2.0 Token Exchange',
     endpoint: 'POST /v1/oauth2/token',

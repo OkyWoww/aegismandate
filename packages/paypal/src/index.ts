@@ -79,13 +79,29 @@ export interface PayPalOrderResponse {
 export interface PayPalCaptureResponse {
   id: string;
   status: 'COMPLETED' | 'DECLINED' | 'FAILED' | 'PENDING';
-  amount: {
+  amount?: {
     currency_code: string;
     value: string;
   };
   seller_protection?: {
     status: string;
   };
+  purchase_units?: Array<{
+    reference_id?: string;
+    payments?: {
+      captures?: Array<{
+        id: string;
+        status: 'COMPLETED' | 'DECLINED' | 'FAILED' | 'PENDING';
+        amount?: {
+          currency_code: string;
+          value: string;
+        };
+        seller_protection?: {
+          status: string;
+        };
+      }>;
+    };
+  }>;
   links?: Array<{
     href: string;
     rel: string;

@@ -4,7 +4,7 @@
 > *Architectural Isolation, Deterministic Policy Gating, and Cryptographic Audit for Untrusted Autonomous Shopping Agents*
 
 [![CI / Static Checks](https://img.shields.io/badge/TypeScript-Strict%20Checked-blue?logo=typescript)](https://github.com/OkyWoww/mandatepay)
-[![Vitest Test Suite](https://img.shields.io/badge/Vitest-186%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
+[![Vitest Test Suite](https://img.shields.io/badge/Vitest-190%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
 [![Attack Suite](https://img.shields.io/badge/Attack%20Suite-12%2F12%20Blocked-success)](https://github.com/OkyWoww/mandatepay)
 [![PayPal Live Sandbox](https://img.shields.io/badge/PayPal%20Sandbox-Live%20Verified-003087?logo=paypal)](https://github.com/OkyWoww/mandatepay)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -110,45 +110,52 @@ flowchart TD
 
 ---
 
-## 3. PayPal Live Sandbox Integration Proof (`pnpm test:live-paypal`)
+## 3. PayPal Live Sandbox Integration Proof & Plan B Lifecycle
 
 Unlike projects relying exclusively on local network mocks, AegisMandate includes verified live end-to-end integration against PayPal's actual developer sandbox gateway (`api-m.sandbox.paypal.com`):
 
+### 3.1 Real Order Creation & Approve Link Generation (`scripts/create-sandbox-order.ts`)
 ```bash
-pnpm test:live-paypal
+npx tsx scripts/create-sandbox-order.ts
+```
+```text
+======================================================================
+CREATE REAL ORDER KE PAYPAL SANDBOX (POST /v2/checkout/orders)
+Target API: https://api-m.sandbox.paypal.com
+======================================================================
+OAuth 2.0 Token acquired: [REDACTED] (1118ms)
+
+--- HASIL PEMBUATAN ORDER NYATA ---
+Order ID (17 Karakter) : 0VJ350000M292973P
+Panjang Order ID        : 17 karakter
+Status Order Saat Ini   : CREATED
+Latency Jaringan API    : 902ms
+
+--- LINK APPROVE (PAYER-ACTION) ---
+Approve URL             : https://www.sandbox.paypal.com/checkoutnow?token=0VJ350000M292973P
+======================================================================
 ```
 
-### Authentic Live Sandbox Execution Results:
+### 3.2 Plan B Lifecycle Enforcement: Pre-Approval Capture Rejection (`scripts/paypal-capture-proof.ts`)
+Under PayPal Orders v2, an order with status `CREATED` cannot be captured prior to payer approval. Attempting capture returns `422 UNPROCESSABLE_ENTITY (ORDER_NOT_APPROVED)`. AegisMandate verifies this gate directly against the live sandbox:
+
+```bash
+pnpm test:paypal-capture-proof
+```
 ```text
 ================================================================================
- LIVE PAYPAL SANDBOX INTEGRATION PROOF (Priority 1)
- Target Endpoint: https://api-m.sandbox.paypal.com
- Environment:     sandbox
+ PAYPAL SANDBOX PLAN B LIFECYCLE VERIFICATION SUMMARY
 ================================================================================
-
-[1/4] Executing Live OAuth 2.0 Token Exchange...
-      -> Acquired token in 1025ms: A21AAJssYTGu...8iUWtg
-
-[2/4] Creating Real Sandbox Order (intent: CAPTURE)...
-      -> Created Order ID: 3UN18941FW6005209 (Length: 17 chars) in 1341ms
-
-[3/4] Verifying Order State via Live GET...
-      -> Retrieved Order in 1136ms: Status = CREATED
-
-[4/4] Testing Vault v3 Setup Token API...
-      -> Vault Setup Token ID: 06D44230C7878412W in 675ms
-
-================================================================================
- AUTHENTIC PAYPAL SANDBOX EXECUTION PROOF TABLE
-================================================================================
-Step Name                   Endpoint                      Latency   ID / Token / Status
+Stage                     Endpoint                            Status / Code       Latency
 --------------------------------------------------------------------------------
-OAuth 2.0 Token Exchange    POST /v1/oauth2/token         1025ms    A21AAJssYTGu...8iUWtg (Bearer token acquired)
-Orders v2 Create Order      POST /v2/checkout/orders      1341ms    3UN18941FW6005209 (Status: CREATED, 17 chars)
-Orders v2 Get Order Details GET /v2/checkout/orders/:id   1136ms    3UN18941FW6005209 (Verified Status: CREATED)
-Vault v3 Setup Token        POST /v3/vault/setup-tokens   675ms     06D44230C7878412W (Status: PAYER_ACTION_REQUIRED)
+OAuth 2.0 Token Exchange  POST /v1/oauth2/token               200 OK              591ms
+Orders v2 Create          POST /v2/checkout/orders            CREATED (17 chars)  509ms
+Plan B Gate Verification  POST /v2/checkout/orders/:id/capture422 UNPROCESSABLE_  798ms
+Order State Query         GET /v2/checkout/orders/:id         CREATED             468ms
 ================================================================================
-Verified: 17-character real PayPal Order ID obtained from api-m.sandbox.paypal.com.
+All tokens: [REDACTED]
+Order ID:   2GT26365XD360852L (17 characters)
+Verified:   Authentic HTTPS communication with api-m.sandbox.paypal.com
 ================================================================================
 ```
 

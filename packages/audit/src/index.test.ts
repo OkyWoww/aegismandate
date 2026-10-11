@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { AuditEvent } from '@mandatepay/schemas';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -265,44 +265,44 @@ describe('Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11', 
       verifyDb.close();
     });
 
-    it('processes true asynchronous parallel concurrency burst (≥ 200 events) across 5 separate connections using Promise.all under real contention', async () => {
-      const concurrencyDbPath = path.join(testDbDir, 'concurrency_race.db');
-      const connCount = 5;
-      const eventsPerConn = 40;
-      const totalEvents = connCount * eventsPerConn; // 200 events
+    it('processes true multi-process concurrency burst (4 worker processes × 50 txns = 200 events) under real WAL lock contention', async () => {
+      const concurrencyDbPath = path.join(testDbDir, 'concurrency_multiprocess.db');
+      const workerScriptPath = path.resolve(__dirname, '../../../scripts/concurrency-worker.ts');
+      const workerCount = 4;
+      const txPerWorker = 50;
+      const totalEvents = workerCount * txPerWorker; // 200 events
 
-      const connections: DatabaseConnection[] = [];
-      for (let c = 0; c < connCount; c++) {
-        connections.push(openDb(concurrencyDbPath));
-      }
+      // Initialize table first
+      const initDb = openDb(concurrencyDbPath);
+      initAuditTable(initDb);
+      initDb.close();
 
-      // Launch 200 concurrent promises across 5 distinct connections with random micro-delays
-      const tasks: Array<() => Promise<AuditEvent>> = [];
-      for (let c = 0; c < connCount; c++) {
-        for (let i = 0; i < eventsPerConn; i++) {
-          const workerConn = connections[c]!;
-          const workerId = c;
-          const taskId = i;
-          tasks.push(async () => {
-            // Yield to event loop to induce real SQLite lock contention
-            await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 8)));
-            return appendAuditEvent(workerConn, {
-              actor: 'control_plane',
-              type: 'RACE_BURST',
-              ref: `worker_${workerId}_task_${taskId}`,
-              payload: { workerId, taskId, ts: Date.now() },
-            });
+      // Launch 4 distinct OS processes running the worker script
+      const isWindows = process.platform === 'win32';
+      const npxCmd = isWindows ? 'npx.cmd' : 'npx';
+
+      const workerPromises = Array.from({ length: workerCount }, (_, workerId) => {
+        return new Promise<void>((resolve, reject) => {
+          const child = spawn(
+            npxCmd,
+            ['tsx', workerScriptPath, concurrencyDbPath, String(workerId), String(txPerWorker)],
+            { shell: isWindows, stdio: 'ignore' },
+          );
+
+          child.on('close', (code) => {
+            if (code === 0) {
+              resolve();
+            } else {
+              reject(new Error(`Worker ${workerId} exited with code ${code}`));
+            }
           });
-        }
-      }
 
-      // Execute all 200 writes concurrently
-      const appended = await Promise.all(tasks.map((t) => t()));
-      expect(appended).toHaveLength(totalEvents);
+          child.on('error', reject);
+        });
+      });
 
-      for (const conn of connections) {
-        conn.close();
-      }
+      // Wait for all 4 processes to complete their 50 concurrent transactions each
+      await Promise.all(workerPromises);
 
       // Verify final ledger with fresh connection
       const verifyDb = openDb(concurrencyDbPath);
@@ -319,12 +319,13 @@ describe('Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11', 
         expect(seqSet.has(s)).toBe(true);
       }
 
+      // Verify unbroken cryptographic chain across all 200 events
       const chainVerification = verifyAuditLedger(verifyDb);
       expect(chainVerification.valid).toBe(true);
       expect(chainVerification.count).toBe(totalEvents);
       expect(chainVerification.brokenAtSeq).toBeUndefined();
 
       verifyDb.close();
-    });
+    }, 45000);
   });
 });

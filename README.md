@@ -159,6 +159,26 @@ Verified:   Authentic HTTPS communication with api-m.sandbox.paypal.com
 ================================================================================
 ```
 
+### 3.3 Live Post-Approval Settlement Capture (`scripts/execute-approved-capture.ts`)
+Once the buyer authorizes the order via the sandbox checkout portal, `POST /v2/checkout/orders/{id}/capture` executes the settlement, obtaining an authentic 17-character PayPal capture ID:
+
+```text
+================================================================================
+ LIVE PAYPAL CAPTURE SUCCESSFUL!
+================================================================================
+Order ID                  : 0VJ350000M292973P
+Capture Latency           : 1569ms
+Root Response ID          : 0VJ350000M292973P
+Overall Status            : COMPLETED
+Primary Capture ID        : 3AT89358W56184218 (Length: 17 characters)
+Captured Amount           : USD 15.00 (Gross: $15.00, Fee: $0.81, Net: $14.19)
+Payer ID                  : J3HBQE4Q3UQDE
+Seller Protection Status  : ELIGIBLE
+Self Capture Link         : https://api.sandbox.paypal.com/v2/payments/captures/3AT89358W56184218
+Refund Link               : https://api.sandbox.paypal.com/v2/payments/captures/3AT89358W56184218/refund
+================================================================================
+```
+
 ---
 
 ## 4. Verifiable Security Invariants Matrix (INV-1 to INV-12)

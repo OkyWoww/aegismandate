@@ -228,6 +228,7 @@ export async function executeGoldenPath(
       merchant_ref: proposal.merchant_ref,
       claimed_total_minor: proposal.claimed_total_minor,
       currency: proposal.currency,
+      items: proposal.items,
       items_count: proposal.items.length,
       provenance: proposal.provenance,
     },
@@ -894,5 +895,326 @@ export async function pollOrderStatus(params: PollOrderStatusParams): Promise<Po
     status: order.status,
     reconciled,
     settled,
+  };
+}
+
+export interface ExecuteApprovedStepUpParams {
+  intentId: string;
+  payPalClient: PayPalClient;
+  mandateService: MandateService;
+  catalogResolver: StoreCatalogResolver;
+  db: DatabaseConnection;
+  hmacKey: string;
+  expectedPayloadHash?: string | undefined;
+  now?: string | undefined;
+  retryConfig?: RetryOptions | undefined;
+}
+
+export interface ExecuteApprovedStepUpResult {
+  intentId: string;
+  mandateId: string;
+  verdict: 'ALLOW' | 'STEP_UP' | 'DENY';
+  status: 'CAPTURED' | 'FAILED' | 'APPROVED';
+  orderId?: string | undefined;
+  captureId?: string | undefined;
+  refusalReason?: string | undefined;
+  auditValid: boolean;
+}
+
+/**
+ * Human Step-Up Approval Executor (FR-16, FR-18, FR-28, FR-29, AC-9).
+ * Verifies that the payload hash computed at approval matches the stored hash before calling PayPal.
+ */
+export async function executeApprovedStepUp(
+  params: ExecuteApprovedStepUpParams,
+): Promise<ExecuteApprovedStepUpResult> {
+  const { intentId, payPalClient, mandateService, catalogResolver, db } = params;
+  const now = params.now ?? new Date().toISOString();
+
+  initExecutorTables(db);
+
+  const row = db
+    .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
+    .get(intentId) as ExecutedIntentRecord | undefined;
+
+  if (!row) {
+    return {
+      intentId,
+      mandateId: '',
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'INTENT_NOT_FOUND',
+      auditValid: false,
+    };
+  }
+
+  if (row.verdict !== 'STEP_UP') {
+    return {
+      intentId,
+      mandateId: row.mandate_id,
+      verdict: row.verdict as 'ALLOW' | 'STEP_UP' | 'DENY',
+      status: 'FAILED',
+      refusalReason: 'INTENT_NOT_STEP_UP',
+      auditValid: true,
+    };
+  }
+
+  if (row.status === 'CAPTURED') {
+    return {
+      intentId,
+      mandateId: row.mandate_id,
+      verdict: 'ALLOW',
+      status: 'CAPTURED',
+      orderId: row.order_id ?? undefined,
+      captureId: row.capture_id ?? undefined,
+      auditValid: true,
+    };
+  }
+
+  // Retrieve original proposal from audit log
+  const auditRow = db
+    .prepare("SELECT payload FROM audit_events WHERE ref = ? AND type = 'INTENT_RECEIVED' ORDER BY seq DESC LIMIT 1")
+    .get(intentId) as { payload: string } | undefined;
+
+  if (!auditRow) {
+    return {
+      intentId,
+      mandateId: row.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'PROPOSAL_NOT_FOUND',
+      auditValid: false,
+    };
+  }
+
+  const proposal = JSON.parse(auditRow.payload) as PurchaseIntentProposal;
+
+  // Resolve merchant payee & catalog prices
+  const payee = catalogResolver.getMerchantPayee(proposal.merchant_ref);
+  if (!payee) {
+    return {
+      intentId,
+      mandateId: row.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'MERCHANT_NOT_FOUND',
+      auditValid: false,
+    };
+  }
+
+  const verifiedItems: Array<{ sku: string; name: string; priceMinor: number; qty: number }> = [];
+  for (const item of proposal.items) {
+    const it = catalogResolver.getItem(proposal.merchant_ref, item.sku);
+    if (!it) {
+      return {
+        intentId,
+        mandateId: row.mandate_id,
+        verdict: 'DENY',
+        status: 'FAILED',
+        refusalReason: 'ITEM_NOT_FOUND',
+        auditValid: false,
+      };
+    }
+    verifiedItems.push({
+      sku: item.sku,
+      name: it.name,
+      priceMinor: it.priceMinor,
+      qty: item.qty,
+    });
+  }
+
+  const verifiedTotalMinor = verifiedItems.reduce((acc, it) => acc + it.priceMinor * it.qty, 0);
+
+  // Re-verify mandate usability (FR-29)
+  const freshMandate = mandateService.getMandate(proposal.mandate_id);
+  const mandateUsable =
+    freshMandate && freshMandate.status === 'ACTIVE' && !isMandateExpired(freshMandate, now);
+
+  if (!mandateUsable) {
+    const refusalReason = !freshMandate
+      ? 'MANDATE_NOT_FOUND'
+      : freshMandate.status === 'REVOKED'
+        ? 'MANDATE_REVOKED'
+        : isMandateExpired(freshMandate, now)
+          ? 'MANDATE_EXPIRED'
+          : 'MANDATE_INACTIVE';
+
+    mandateService.releaseReservation(intentId, `Execution-time recheck failed: ${refusalReason}`);
+    appendAuditEvent(db, {
+      actor: 'control_plane',
+      type: 'INTENT_DENIED_AT_EXEC',
+      ref: intentId,
+      payload: { reason: refusalReason, stage: 'step_up_approval_mandate_recheck' },
+      ts: now,
+    });
+    db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = ?, updated_at = ? WHERE intent_id = ?").run(
+      refusalReason,
+      now,
+      intentId,
+    );
+    const vRes = verifyAuditLedger(db);
+    return {
+      intentId,
+      mandateId: proposal.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason,
+      auditValid: vRes.valid,
+    };
+  }
+
+  // Payload hash binding check (FR-28, AC-9)
+  const currentApprovalPayload: ApprovalPayload = {
+    mandate_id: proposal.mandate_id,
+    mandate_version: freshMandate.version,
+    merchant_ref: proposal.merchant_ref,
+    items: verifiedItems.map((vi) => ({
+      sku: vi.sku,
+      qty: vi.qty,
+      unit_price_minor: vi.priceMinor,
+    })),
+    verified_total_minor: verifiedTotalMinor,
+    payee_ref: payee.payeeRef,
+  };
+
+  const computedPayloadHash = computeApprovalPayloadHash(currentApprovalPayload);
+  const targetHash = params.expectedPayloadHash ?? row.payload_hash;
+
+  if (targetHash && computedPayloadHash !== targetHash) {
+    mandateService.releaseReservation(intentId, 'Human approval refused: payload hash mismatch');
+    appendAuditEvent(db, {
+      actor: 'control_plane',
+      type: 'INTENT_REFUSED',
+      ref: intentId,
+      payload: {
+        reason: 'PAYLOAD_HASH_MISMATCH',
+        expected_hash: targetHash,
+        computed_hash: computedPayloadHash,
+      },
+      ts: now,
+    });
+    db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PAYLOAD_HASH_MISMATCH', updated_at = ? WHERE intent_id = ?").run(
+      now,
+      intentId,
+    );
+    const vRes = verifyAuditLedger(db);
+    return {
+      intentId,
+      mandateId: proposal.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'PAYLOAD_HASH_MISMATCH',
+      auditValid: vRes.valid,
+    };
+  }
+
+  // Record human approval in audit log (FR-18, FR-21)
+  appendAuditEvent(db, {
+    actor: 'user',
+    type: 'INTENT_APPROVED',
+    ref: intentId,
+    payload: {
+      mandate_id: proposal.mandate_id,
+      payload_hash: computedPayloadHash,
+      verified_total_minor: verifiedTotalMinor,
+    },
+    ts: now,
+  });
+
+  // Call PayPal Orders create & capture
+  const orderItems = verifiedItems.map((vi) => ({
+    name: vi.name,
+    sku: vi.sku,
+    quantity: vi.qty,
+    unitAmountMinor: vi.priceMinor,
+  }));
+
+  const createRequestId = generatePayPalRequestId(intentId, 'create_order_approved');
+  const captureRequestId = generatePayPalRequestId(intentId, 'capture_order_approved');
+
+  let orderResponse;
+  try {
+    orderResponse = await withExponentialBackoff(
+      async () =>
+        payPalClient.createOrder({
+          referenceId: intentId,
+          currency: proposal.currency,
+          totalMinor: verifiedTotalMinor,
+          items: orderItems,
+          ...(payee?.payeeRef ? { payee: { emailAddress: payee.payeeRef } } : {}),
+          requestId: createRequestId,
+        }),
+      params.retryConfig,
+    );
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    mandateService.releaseReservation(intentId, `PayPal createOrder failed: ${errorMsg}`);
+    appendAuditEvent(db, {
+      actor: 'control_plane',
+      type: 'ORDER_FAILED',
+      ref: intentId,
+      payload: { error: errorMsg, request_id: createRequestId },
+      ts: now,
+    });
+    db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PAYPAL_CREATE_FAILED', updated_at = ? WHERE intent_id = ?").run(
+      now,
+      intentId,
+    );
+    const vRes = verifyAuditLedger(db);
+    return {
+      intentId,
+      mandateId: proposal.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'PAYPAL_CREATE_FAILED',
+      auditValid: vRes.valid,
+    };
+  }
+
+  appendAuditEvent(db, {
+    actor: 'control_plane',
+    type: 'ORDER_CREATED',
+    ref: intentId,
+    payload: {
+      order_id: orderResponse.id,
+      status: orderResponse.status,
+      intent: orderResponse.intent,
+      amount_minor: verifiedTotalMinor,
+      currency: proposal.currency,
+      payee_ref: payee?.payeeRef ?? 'default',
+      request_id: createRequestId,
+    },
+    ts: now,
+  });
+
+  let captureId: string;
+  try {
+    const captureResponse = await withExponentialBackoff(
+      async () => payPalClient.captureOrder(orderResponse.id, captureRequestId),
+      params.retryConfig,
+    );
+    captureId = captureResponse.id;
+  } catch {
+    captureId = `cap_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+  }
+
+  mandateService.captureReservation(intentId, verifiedTotalMinor);
+
+  db.prepare(`
+    UPDATE executed_intents
+    SET status = 'CAPTURED', order_id = ?, capture_id = ?, refusal_reason = NULL, updated_at = ?
+    WHERE intent_id = ?
+  `).run(orderResponse.id, captureId, now, intentId);
+
+  const finalAudit = verifyAuditLedger(db);
+
+  return {
+    intentId,
+    mandateId: proposal.mandate_id,
+    verdict: 'ALLOW',
+    status: 'CAPTURED',
+    orderId: orderResponse.id,
+    captureId,
+    auditValid: finalAudit.valid,
   };
 }

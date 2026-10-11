@@ -18,16 +18,18 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@mandatepay/schemas": "workspace:*",
-    "@mandatepay/policy": "workspace:*",
-    "@mandatepay/audit": "workspace:*",
-    "@mandatepay/scanner": "workspace:*",
-    "@mandatepay/paypal": "workspace:*",
+    "@fastify/cors": "^11.3.1",
     "@mandatepay/agent": "workspace:*",
-    "dotenv": "^17.2.3"
+    "@mandatepay/audit": "workspace:*",
+    "@mandatepay/paypal": "workspace:*",
+    "@mandatepay/policy": "workspace:*",
+    "@mandatepay/scanner": "workspace:*",
+    "@mandatepay/schemas": "workspace:*",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.12.5"
   },
   "devDependencies": {
-    "typescript": "^5.8.0",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.0"
   }
 }

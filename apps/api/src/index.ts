@@ -22,4 +22,5 @@ export function createControlPlane(payPalConfig: ConstructorParameters<typeof Pa
 
 export * from './mandate-service.js';
 export * from './executor.js';
+export * from './server.js';
 

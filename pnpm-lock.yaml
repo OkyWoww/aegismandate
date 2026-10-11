@@ -249,9 +249,15 @@ importers:
 
   packages/sim:
     dependencies:
+      '@mandatepay/api':
+        specifier: workspace:*
+        version: link:../../apps/api
       '@mandatepay/audit':
         specifier: workspace:*
         version: link:../audit
+      '@mandatepay/paypal':
+        specifier: workspace:*
+        version: link:../paypal
       '@mandatepay/policy':
         specifier: workspace:*
         version: link:../policy

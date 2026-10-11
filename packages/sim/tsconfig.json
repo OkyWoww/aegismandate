@@ -8,7 +8,9 @@
     { "path": "../schemas" },
     { "path": "../policy" },
     { "path": "../audit" },
-    { "path": "../scanner" }
+    { "path": "../scanner" },
+    { "path": "../paypal" },
+    { "path": "../../apps/api" }
   ],
   "include": ["src/**/*"]
 }

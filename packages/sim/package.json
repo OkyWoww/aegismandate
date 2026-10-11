@@ -20,7 +20,9 @@
     "@mandatepay/schemas": "workspace:*",
     "@mandatepay/policy": "workspace:*",
     "@mandatepay/audit": "workspace:*",
-    "@mandatepay/scanner": "workspace:*"
+    "@mandatepay/scanner": "workspace:*",
+    "@mandatepay/paypal": "workspace:*",
+    "@mandatepay/api": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.0",

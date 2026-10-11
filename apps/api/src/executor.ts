@@ -422,6 +422,46 @@ export async function executeGoldenPath(
   });
 
   if (decision.verdict !== 'ALLOW') {
+    if (decision.verdict === 'STEP_UP') {
+      const reserveRes = mandateService.reserve({
+        mandateId: proposal.mandate_id,
+        intentId: proposal.intent_id,
+        amountMinor: verifiedTotalMinor,
+      });
+
+      if (!reserveRes.success || !reserveRes.reservation) {
+        db.prepare(`
+          INSERT INTO executed_intents (
+            intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          proposal.intent_id,
+          proposal.mandate_id,
+          'DENY',
+          JSON.stringify(decision),
+          'FAILED',
+          null,
+          null,
+          computedPayloadHash,
+          'RESERVATION_FAILED',
+          now,
+          now,
+        );
+
+        const vRes = verifyAuditLedger(db);
+        return {
+          intentId: proposal.intent_id,
+          mandateId: proposal.mandate_id,
+          verdict: 'DENY',
+          decision,
+          status: 'FAILED',
+          refusalReason: 'RESERVATION_FAILED',
+          auditEventsCount: vRes.count,
+          auditValid: vRes.valid,
+        };
+      }
+    }
+
     const endStatus = decision.verdict === 'STEP_UP' ? 'APPROVED' : 'DENIED';
     db.prepare(`
       INSERT INTO executed_intents (
@@ -448,6 +488,7 @@ export async function executeGoldenPath(
       verdict: decision.verdict,
       decision,
       status: endStatus,
+      refusalReason: decision.verdict === 'DENY' ? decision.reason_codes.join(',') : undefined,
       auditEventsCount: vRes.count,
       auditValid: vRes.valid,
     };

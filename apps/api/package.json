@@ -23,6 +23,7 @@
     "@mandatepay/audit": "workspace:*",
     "@mandatepay/scanner": "workspace:*",
     "@mandatepay/paypal": "workspace:*",
+    "@mandatepay/agent": "workspace:*",
     "dotenv": "^17.2.3"
   },
   "devDependencies": {

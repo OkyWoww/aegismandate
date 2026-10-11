@@ -9,7 +9,8 @@
     { "path": "../../packages/policy" },
     { "path": "../../packages/audit" },
     { "path": "../../packages/scanner" },
-    { "path": "../../packages/paypal" }
+    { "path": "../../packages/paypal" },
+    { "path": "../agent" }
   ],
   "include": ["src/**/*"]
 }

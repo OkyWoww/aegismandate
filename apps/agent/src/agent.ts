@@ -114,12 +114,15 @@ export class ShopperAgent {
             const parsed = JSON.parse(toolResult.output) as {
               verdict?: string;
               reason_codes?: string[];
+              decision?: { verdict?: string; reason_codes?: string[] };
               intent_id?: string;
             };
-            if (parsed.verdict) {
+            const verdict = parsed.verdict ?? parsed.decision?.verdict;
+            if (verdict) {
+              const reasonCodes = parsed.reason_codes ?? parsed.decision?.reason_codes;
               controlPlaneDecision = {
-                verdict: parsed.verdict,
-                ...(parsed.reason_codes ? { reason_codes: parsed.reason_codes } : {}),
+                verdict,
+                ...(reasonCodes ? { reason_codes: reasonCodes } : {}),
                 ...(parsed.intent_id ? { intent_id: parsed.intent_id } : {}),
               };
             }

@@ -6,9 +6,9 @@
     { "path": "./packages/audit" },
     { "path": "./packages/scanner" },
     { "path": "./packages/paypal" },
+    { "path": "./apps/agent" },
     { "path": "./apps/api" },
     { "path": "./packages/sim" },
-    { "path": "./apps/agent" },
     { "path": "./apps/stores" },
     { "path": "./apps/web" }
   ]

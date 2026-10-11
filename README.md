@@ -119,7 +119,8 @@ mandatepay/
 | **T-012** | **Shopper Agent Harness** | 🟢 COMPLETED | Untrusted Cognitive Plane runtime + Fake LLM + strict schemas (`apps/agent`, `Phase 3`) |
 | **T-013** | **Agent Integration Tests**| 🟢 COMPLETED | End-to-end shopping agent integration scenarios (1-4) & audit ledger (`Phase 3`) |
 | **T-014** | **Fastify HTTP API Server**| 🟢 COMPLETED | Complete REST control plane with CORS, human approval, audit verify, & webhooks (`Phase 3`) |
-| **T-015** | **Step-Up Approval Queue**| 🟡 READY     | Human-in-the-loop step-up queue, timeouts, and authorization (`Phase 3`) |
+| **T-015** | **Dashboard & Web UI**   | 🟢 COMPLETED | React 19 + Tailwind control plane dashboard, approvals queue, & live attack console (`Phase 3`) |
+| **T-016** | **Dispute Copilot & Deploy**| 🟡 READY     | Customer dispute evidence drafting copilot & Render deployment (`Phase 4`) |
 
 ### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
 

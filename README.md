@@ -221,6 +221,7 @@ mandatepay/
 | **T-016** | **Local E2E Orchestration**| 🟢 COMPLETED | Single-command concurrent dev runner (`pnpm dev`) & ephemeral smoke suite | `tech §7` |
 | **T-017** | **Documentation Kit**   | 🟢 COMPLETED | Executive README, API reference ([`docs/api.md`](docs/api.md)), demo script ([`docs/demo-script.md`](docs/demo-script.md)) | `demo §2` |
 | **T-018** | **CI/CD & Quality Gates**| 🟢 COMPLETED | GitHub Actions 7-stage CI pipeline, frozen lockfile check, production build validation | `tech §2` |
+| **T-019** | **Submission & Release**| 🟢 COMPLETED | Final codebase hygiene audit, Devpost checklist, tagged release `v1.0.0` | `tasks T-019` |
 
 ---
 

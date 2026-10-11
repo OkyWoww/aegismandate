@@ -110,8 +110,8 @@ mandatepay/
 | **T-003** | **Shared Schemas (Zod)** | 🟢 COMPLETED | Strict Zod schemas for Mandate, Proposal, Decision, Audit (`spec.md §3`) |
 | **T-004** | **Audit Ledger Package** | 🟢 COMPLETED | Hash-chained ledger (`better-sqlite3`, WAL mode, BEGIN IMMEDIATE) |
 | **T-005** | **Mandate Service** | 🟢 COMPLETED | Lifecycle management (create, activate, revoke, suspend), HMAC-SHA256 |
-| **T-006** | **Demo Store & Catalog** | 🟡 READY | Deterministic merchants, categories, and relative-clock seed script |
-| **T-007** | **Golden Path End-to-End**| 🟡 PENDING | Scripted intent → policy → reservation → PayPal create/capture |
+| **T-006** | **Demo Store & Catalog** | 🟢 COMPLETED | Deterministic merchants, categories, and relative-clock seed script |
+| **T-007** | **Golden Path End-to-End**| 🟡 READY | Scripted intent → policy → reservation → PayPal create/capture |
 
 ### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
 

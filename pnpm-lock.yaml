@@ -134,6 +134,15 @@ importers:
 
   apps/stores:
     dependencies:
+      '@mandatepay/api':
+        specifier: workspace:*
+        version: link:../api
+      '@mandatepay/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
+      '@mandatepay/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
       '@mandatepay/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

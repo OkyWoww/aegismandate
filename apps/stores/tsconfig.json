@@ -5,7 +5,10 @@
     "outDir": "./dist"
   },
   "references": [
-    { "path": "../../packages/schemas" }
+    { "path": "../../packages/schemas" },
+    { "path": "../../packages/audit" },
+    { "path": "../../packages/policy" },
+    { "path": "../api" }
   ],
   "include": ["src/**/*"]
 }

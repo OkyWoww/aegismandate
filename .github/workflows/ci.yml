@@ -8,8 +8,11 @@ on:
 
 jobs:
   verify:
-    name: Verify & Test
+    name: Verify, Test & Build (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,23 +22,29 @@ jobs:
         with:
           version: 9
 
-      - name: Setup Node.js
+      - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
 
-      - name: Install dependencies
+      - name: 1. Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
+      - name: 2. TypeScript Strict Typecheck
         run: pnpm typecheck
 
-      - name: Lint
+      - name: 3. ESLint & Architectural Boundaries
         run: pnpm lint
 
-      - name: Run Test Suite
+      - name: 4. Workspace Unit & Integration Test Suites
         run: pnpm test
 
-      - name: Run Attack Suite
+      - name: 5. Adversarial Attack Suite Runner (A-01 to A-12)
         run: pnpm attack-suite
+
+      - name: 6. Production Dashboard Web Build
+        run: pnpm build
+
+      - name: 7. Ephemeral End-to-End Smoke Verification
+        run: pnpm smoke

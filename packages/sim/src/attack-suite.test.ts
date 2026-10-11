@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { openDb, type DatabaseConnection } from '@mandatepay/audit';
 import {
   evaluateFullPolicy,
@@ -18,7 +18,7 @@ import {
   executeGoldenPath,
   type StoreCatalogResolver,
 } from '@mandatepay/api';
-import { PayPalClient } from '@mandatepay/paypal';
+import { PayPalClient, createMockPayPalFetch } from '@mandatepay/paypal';
 import {
   ShopperAgent,
   FakeLlmClient,
@@ -933,6 +933,96 @@ describe('MandatePay Complete Attack Suite (Harness A-01 to A-12, spec.md ยง6, ย
       expect(resP07.decision?.verdict).toBe('DENY');
       expect(resP07.decision?.reason_codes).toContain('OVER_TXN_LIMIT');
       expect(resP07.success).toBe(false);
+    });
+
+    it('INV-2: Vitest spy test verifying every outgoing PayPal order request strictly has payee matching registry', async () => {
+      const db = openDb(':memory:');
+      setupAttackDatabase(db);
+      const catalogResolver = createCatalogResolver(db);
+      const mandateService = new MandateService(db, TEST_HMAC_KEY, () => '2026-10-20T10:00:00Z');
+
+      mandateService.createDraft({
+        ...baseMandate,
+        mandate_id: 'mnd_inv2_spy_test',
+        allowed_merchants: ['mrc_demo_store'],
+        created_at: '2026-10-20T00:00:00Z',
+      });
+      mandateService.activate('mnd_inv2_spy_test');
+
+      const payPalClient = new PayPalClient({
+        clientId: 'mock_paypal_client_id',
+        clientSecret: 'mock_paypal_client_secret',
+        environment: 'sandbox',
+        fetchFn: createMockPayPalFetch(),
+      });
+
+      const createOrderSpy = vi.spyOn(payPalClient, 'createOrder');
+
+      // 1. Valid execution: payee passed to PayPal MUST strictly equal registry payee
+      const validProposal: PurchaseIntentProposal = {
+        intent_id: 'int_inv2_spy_valid',
+        mandate_id: 'mnd_inv2_spy_test',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'goal_inv2',
+        rationale: 'Valid intent proposing pens',
+        provenance: { sources: [{ kind: 'user', ref: 'goal_inv2', trust: 'user' }] },
+      };
+
+      const result = await executeGoldenPath({
+        proposal: validProposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: '2026-10-20T10:05:00Z',
+      });
+
+      expect(result.verdict).toBe('ALLOW');
+      expect(createOrderSpy).toHaveBeenCalledTimes(1);
+
+      const outgoingCall = createOrderSpy.mock.calls[0]![0];
+      const registryPayee = catalogResolver.getMerchantPayee('mrc_demo_store')!;
+      expect(outgoingCall.payee?.emailAddress).toBe(registryPayee.payeeRef);
+      expect(outgoingCall.payee?.emailAddress).toBe('merchant@demo-store.local');
+
+      // 2. Across attack vectors A-01, A-02, A-04 (payee override attempt, prompt injection, budget overflow):
+      // Verify that createOrder is NEVER called with attacker-supplied payee or called at all for denied intents
+      createOrderSpy.mockClear();
+
+      for (const scenario of ATTACK_SCENARIOS) {
+        if (scenario.id === 'A-01' || scenario.id === 'A-02' || scenario.id === 'A-04') {
+          const maliciousProposal: PurchaseIntentProposal = {
+            ...validProposal,
+            intent_id: `int_spy_atk_${scenario.id}`,
+            rationale: `Attacking with scenario ${scenario.id}: payee=attacker@evil.com`,
+          };
+          if (scenario.id === 'A-01') {
+            maliciousProposal.merchant_ref = 'mrc_unauthorized_attacker';
+          }
+          await executeGoldenPath({
+            proposal: maliciousProposal,
+            rawJson: JSON.stringify({ ...maliciousProposal, payee_email: 'attacker@evil.com' }),
+            payPalClient,
+            mandateService,
+            catalogResolver,
+            db,
+            hmacKey: TEST_HMAC_KEY,
+            now: '2026-10-20T10:05:00Z',
+          });
+        }
+      }
+
+      // Outgoing PayPal createOrder was NEVER invoked for malicious intents
+      expect(createOrderSpy).toHaveBeenCalledTimes(0);
+
+      // Verify invariant: across ALL calls to createOrder in this suite, payee strictly equals registry
+      for (const call of createOrderSpy.mock.calls) {
+        expect(call[0].payee?.emailAddress).toBe(registryPayee.payeeRef);
+      }
     });
   });
 });

@@ -268,13 +268,17 @@ async function runSmokeSuite(): Promise<boolean> {
         capture_id?: string;
       };
 
-      if (appRes.status === 200 && appBody.status === 'CAPTURED' && appBody.order_id && appBody.capture_id) {
+      if (
+        appRes.status === 200 &&
+        (appBody.status === 'CAPTURED' || appBody.status === 'AWAITING_PAYER_APPROVAL') &&
+        appBody.order_id
+      ) {
         results.push({
           step: 4,
           name: 'STEP_UP Intent & Approval (POST /approve)',
           status: 'PASS',
           durationMs: Date.now() - t4Start,
-          details: `HTTP 200 OK — STEP_UP verified, approved & captured order_id=${appBody.order_id}`,
+          details: `HTTP 200 OK — STEP_UP verified, order_id=${appBody.order_id}, status=${appBody.status}`,
         });
       } else {
         throw new Error(`Approval failed: HTTP ${appRes.status} ${JSON.stringify(appBody)}`);

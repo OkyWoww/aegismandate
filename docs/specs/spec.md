@@ -205,7 +205,7 @@ Rules:
 - **AC-3 Idempotency.** Submitting the same `intent_id` twice yields identical decisions and exactly one PayPal order.
 - **AC-4 Revocation.** Revoking a mandate while an intent awaits approval makes approval fail with `MANDATE_REVOKED`.
 - **AC-5 Audit integrity.** After any run `verify` passes; after manually altering one row, `verify` reports that row's `seq`.
-- **AC-6 Webhook authenticity.** A webhook with an invalid signature is rejected (401) and audit-logged; state does not change.
+- **AC-6 Webhook authenticity.** A webhook with an invalid signature is rejected (400 INVALID_WEBHOOK_SIGNATURE) and audit-logged; state does not change.
 - **AC-7 No credentials in agent.** Static check: the agent package imports no PayPal client and its environment contains no PayPal secrets.
 - **AC-8 Reservation integrity.** Given budget B, when N concurrent intents are submitted whose sum exceeds B, then `captured + reserved ≤ B` at all times (concurrency test), and releasing a rejected/timed-out step-up frees exactly its reservation.
 - **AC-9 Approval binding.** Mutating any field of the stored payload after approval (price, qty, merchant) causes the executor to refuse (`PAYLOAD_HASH_MISMATCH`); no order is created.
@@ -245,3 +245,5 @@ Rules:
 |------|----------|------------|
 | 2026-10-07 | Does a pending STEP_UP consume budget? | Yes — reserved at decision time, released on reject/timeout/fail (FR-26). |
 | 2026-10-07 | Can an agent-supplied nested value smuggle a payee? | Blocked by deep key scan + value constraints + payee-from-registry (P-03, A-12). |
+| 2026-10-11 | Webhook rejection HTTP status code? | Aligned to HTTP 400 Bad Request (`INVALID_WEBHOOK_SIGNATURE`) per standard webhook ingest conventions. Invariant holds: state does not change and incident is recorded in audit ledger (AC-6, INV-10). |
+| 2026-10-11 | Order Substitution Prevention? | Stripped client-supplied `paypal_order_id` from request schemas; executor strictly reads `row.order_id` from database and performs strict PayPal pre-flight validation (`status === 'APPROVED'`, totals/currency match, reference_id matches intent, payee matches server registry). |

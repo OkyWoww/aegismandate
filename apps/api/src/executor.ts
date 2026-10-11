@@ -13,7 +13,7 @@ import {
   type PolicyEvaluationFacts,
 } from '@mandatepay/policy';
 import { MandateService } from './mandate-service.js';
-import type { PayPalClient } from '@mandatepay/paypal';
+import type { PayPalClient, PayPalOrderResponse } from '@mandatepay/paypal';
 
 export interface StoreCatalogResolver {
   getMerchantPayee(merchantRef: string): { payeeRef: string; merchantId: string; name: string } | null;
@@ -48,7 +48,8 @@ export interface GoldenPathResult {
   reservation?: MandateReservation | undefined;
   orderId?: string | undefined;
   captureId?: string | undefined;
-  status: 'CAPTURED' | 'APPROVED' | 'DENIED' | 'FAILED';
+  approveUrl?: string | undefined;
+  status: 'CAPTURED' | 'APPROVED' | 'DENIED' | 'FAILED' | 'AWAITING_PAYER_APPROVAL';
   auditEventsCount: number;
   auditValid: boolean;
   refusalReason?: string | undefined;
@@ -183,6 +184,41 @@ export async function withExponentialBackoff<T>(
  * 9. Reservation capture settlement & BUDGET_CAPTURED audit logging
  * 10. Cryptographic hash-chained audit verification (FR-21, FR-22)
  */
+export interface CreateMandatePayPalOrderParams {
+  payPalClient: PayPalClient;
+  intentId: string;
+  currency: string;
+  totalMinor: number;
+  items: Array<{ name: string; sku: string; quantity: number; unitAmountMinor: number }>;
+  payeeRef: string;
+  requestId: string;
+  retryConfig?: RetryOptions | undefined;
+}
+
+/**
+ * Unified PayPal order creation helper conforming strictly to INV-2.
+ * SOURCING GUARANTEE: Payee is strictly resolved from the authoritative server-side merchant registry,
+ * completely ignoring any payee hints, emails, or strings from agent proposals/rationale.
+ */
+export async function createMandatePayPalOrder(
+  params: CreateMandatePayPalOrderParams,
+): Promise<PayPalOrderResponse> {
+  const { payPalClient, intentId, currency, totalMinor, items, payeeRef, requestId, retryConfig } = params;
+
+  return withExponentialBackoff(
+    async () =>
+      payPalClient.createOrder({
+        referenceId: intentId,
+        currency,
+        totalMinor,
+        items,
+        payee: { emailAddress: payeeRef },
+        requestId,
+      }),
+    retryConfig,
+  );
+}
+
 export async function executeGoldenPath(
   params: GoldenPathExecutionParams,
 ): Promise<GoldenPathResult> {
@@ -675,20 +711,18 @@ export async function executeGoldenPath(
   const createRequestId = generatePayPalRequestId(proposal.intent_id, 'create_order');
   const captureRequestId = generatePayPalRequestId(proposal.intent_id, 'capture_order');
 
-  let orderResponse;
+  let orderResponse: PayPalOrderResponse;
   try {
-    orderResponse = await withExponentialBackoff(
-      async () =>
-        payPalClient.createOrder({
-          referenceId: proposal.intent_id,
-          currency: proposal.currency,
-          totalMinor: verifiedTotalMinor,
-          items: orderItems,
-          ...(payee?.payeeRef ? { payee: { emailAddress: payee.payeeRef } } : {}),
-          requestId: createRequestId,
-        }),
-      params.retryConfig,
-    );
+    orderResponse = await createMandatePayPalOrder({
+      payPalClient,
+      intentId: proposal.intent_id,
+      currency: proposal.currency,
+      totalMinor: verifiedTotalMinor,
+      items: orderItems,
+      payeeRef: payee?.payeeRef ?? '',
+      requestId: createRequestId,
+      retryConfig: params.retryConfig,
+    });
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     mandateService.releaseReservation(proposal.intent_id, `PayPal createOrder failed: ${errorMsg}`);
@@ -819,6 +853,7 @@ export async function executeGoldenPath(
     reservation: reserveRes.reservation,
     orderId: orderResponse.id,
     captureId,
+    approveUrl: orderResponse.links?.find((l) => l.rel === 'approve')?.href,
     status: 'CAPTURED',
     auditEventsCount: finalAudit.count,
     auditValid: finalAudit.valid,
@@ -923,7 +958,6 @@ export interface ExecuteApprovedStepUpParams {
   db: DatabaseConnection;
   hmacKey: string;
   expectedPayloadHash?: string | undefined;
-  approvedOrderId?: string | undefined;
   now?: string | undefined;
   retryConfig?: RetryOptions | undefined;
 }
@@ -932,9 +966,10 @@ export interface ExecuteApprovedStepUpResult {
   intentId: string;
   mandateId: string;
   verdict: 'ALLOW' | 'STEP_UP' | 'DENY';
-  status: 'CAPTURED' | 'FAILED' | 'APPROVED';
+  status: 'CAPTURED' | 'FAILED' | 'APPROVED' | 'AWAITING_PAYER_APPROVAL';
   orderId?: string | undefined;
   captureId?: string | undefined;
+  approveUrl?: string | undefined;
   refusalReason?: string | undefined;
   auditValid: boolean;
 }
@@ -1150,26 +1185,39 @@ export async function executeApprovedStepUp(
   const createRequestId = generatePayPalRequestId(intentId, 'create_order_approved');
   const captureRequestId = generatePayPalRequestId(intentId, 'capture_order_approved');
 
-  const targetOrderId = params.approvedOrderId ?? row.order_id;
-  let orderResponse: { id: string; status: string; intent?: string };
+  // Priority 1: Prevent Order Substitution Vulnerability.
+  // The executor strictly reads targetOrderId from database (row.order_id), never from client input.
+  let targetOrderId = row.order_id;
 
-  if (targetOrderId) {
-    orderResponse = { id: targetOrderId, status: 'APPROVED', intent: 'CAPTURE' };
-  } else {
+  if (!targetOrderId) {
     try {
-      orderResponse = await withExponentialBackoff(
-        async () =>
-          payPalClient.createOrder({
-            referenceId: intentId,
-            currency: proposal.currency,
-            totalMinor: verifiedTotalMinor,
-            items: orderItems,
-            // INV-2: Payee account is strictly resolved from authoritative merchant registry, never agent hints
-            ...(payee?.payeeRef ? { payee: { emailAddress: payee.payeeRef } } : {}),
-            requestId: createRequestId,
-          }),
-        params.retryConfig,
-      );
+      const orderResponse = await createMandatePayPalOrder({
+        payPalClient,
+        intentId,
+        currency: proposal.currency,
+        totalMinor: verifiedTotalMinor,
+        items: orderItems,
+        payeeRef: payee.payeeRef, // Strictly from server registry (INV-2)
+        requestId: createRequestId,
+        retryConfig: params.retryConfig,
+      });
+      targetOrderId = orderResponse.id;
+
+      appendAuditEvent(db, {
+        actor: 'control_plane',
+        type: 'ORDER_CREATED',
+        ref: intentId,
+        payload: {
+          order_id: targetOrderId,
+          status: orderResponse.status,
+          intent: orderResponse.intent,
+          amount_minor: verifiedTotalMinor,
+          currency: proposal.currency,
+          payee_ref: payee.payeeRef,
+          request_id: createRequestId,
+        },
+        ts: now,
+      });
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       mandateService.releaseReservation(intentId, `PayPal createOrder failed: ${errorMsg}`);
@@ -1194,28 +1242,100 @@ export async function executeApprovedStepUp(
         auditValid: vRes.valid,
       };
     }
+  }
 
+  // Pre-Flight Pre-Capture Validation against PayPal Orders v2 (Priority 1: Order Substitution Prevention)
+  try {
+    const fetchedOrder = await payPalClient.getOrder(targetOrderId);
+
+    // (a) If status is CREATED, order is awaiting payer approval on PayPal (Plan B lifecycle)
+    if (fetchedOrder.status === 'CREATED') {
+      const approveUrl = fetchedOrder.links?.find((l) => l.rel === 'approve')?.href;
+      db.prepare(`
+        UPDATE executed_intents
+        SET status = 'AWAITING_PAYER_APPROVAL', order_id = ?, updated_at = ?
+        WHERE intent_id = ?
+      `).run(targetOrderId, now, intentId);
+
+      appendAuditEvent(db, {
+        actor: 'control_plane',
+        type: 'AWAITING_PAYER_APPROVAL',
+        ref: intentId,
+        payload: {
+          order_id: targetOrderId,
+          status: 'CREATED',
+          approve_url: approveUrl,
+        },
+        ts: now,
+      });
+
+      const vRes = verifyAuditLedger(db);
+      return {
+        intentId,
+        mandateId: proposal.mandate_id,
+        verdict: 'ALLOW',
+        status: 'AWAITING_PAYER_APPROVAL',
+        orderId: targetOrderId,
+        approveUrl,
+        auditValid: vRes.valid,
+      };
+    }
+
+    // Status must be APPROVED for immediate capture
+    if (fetchedOrder.status !== 'APPROVED') {
+      throw new Error(`Order pre-flight validation failed: status is '${fetchedOrder.status}' (expected 'APPROVED')`);
+    }
+
+    // (b) Custom/Reference ID must match intent_id
+    const purchaseUnit = fetchedOrder.purchase_units?.[0];
+    const fetchedRefId = purchaseUnit?.reference_id ?? purchaseUnit?.custom_id;
+    if (fetchedRefId && fetchedRefId !== intentId) {
+      throw new Error(`Order pre-flight validation failed: reference_id '${fetchedRefId}' does not match intent '${intentId}'`);
+    }
+
+    // (c) Amount and currency must match verified intent totals
+    if (purchaseUnit?.amount) {
+      if (purchaseUnit.amount.currency_code !== proposal.currency) {
+        throw new Error(`Order pre-flight validation failed: currency '${purchaseUnit.amount.currency_code}' does not match '${proposal.currency}'`);
+      }
+      const fetchedAmountMinor = Math.round(parseFloat(purchaseUnit.amount.value) * 100);
+      if (fetchedAmountMinor !== verifiedTotalMinor) {
+        throw new Error(`Order pre-flight validation failed: amount ${fetchedAmountMinor} does not match verified total ${verifiedTotalMinor}`);
+      }
+    }
+
+    // (d) Payee must match server-side merchant registry (INV-2)
+    if (purchaseUnit?.payee?.email_address && purchaseUnit.payee.email_address !== payee.payeeRef) {
+      throw new Error(`Order pre-flight validation failed: payee '${purchaseUnit.payee.email_address}' does not match registry '${payee.payeeRef}'`);
+    }
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
     appendAuditEvent(db, {
       actor: 'control_plane',
-      type: 'ORDER_CREATED',
+      type: 'ORDER_PREFLIGHT_FAILED',
       ref: intentId,
-      payload: {
-        order_id: orderResponse.id,
-        status: orderResponse.status,
-        intent: orderResponse.intent,
-        amount_minor: verifiedTotalMinor,
-        currency: proposal.currency,
-        payee_ref: payee?.payeeRef ?? 'default',
-        request_id: createRequestId,
-      },
+      payload: { error: errorMsg, order_id: targetOrderId },
       ts: now,
     });
+    db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PREFLIGHT_VALIDATION_FAILED', updated_at = ? WHERE intent_id = ?").run(
+      now,
+      intentId,
+    );
+    const vRes = verifyAuditLedger(db);
+    return {
+      intentId,
+      mandateId: proposal.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'PREFLIGHT_VALIDATION_FAILED',
+      auditValid: vRes.valid,
+    };
   }
 
   let captureId: string;
   try {
     const captureResponse = await withExponentialBackoff(
-      async () => payPalClient.captureOrder(orderResponse.id, captureRequestId),
+      async () => payPalClient.captureOrder(targetOrderId, captureRequestId),
       params.retryConfig,
     );
     captureId = captureResponse.id;
@@ -1229,11 +1349,11 @@ export async function executeApprovedStepUp(
     type: 'ORDER_CAPTURED',
     ref: intentId,
     payload: {
-      order_id: orderResponse.id,
+      order_id: targetOrderId,
       capture_id: captureId,
       amount_minor: verifiedTotalMinor,
       currency: proposal.currency,
-      payee_ref: payee?.payeeRef ?? 'default',
+      payee_ref: payee.payeeRef,
       status: 'COMPLETED',
       request_id: captureRequestId,
     },
@@ -1246,7 +1366,7 @@ export async function executeApprovedStepUp(
     UPDATE executed_intents
     SET status = 'CAPTURED', order_id = ?, capture_id = ?, refusal_reason = NULL, updated_at = ?
     WHERE intent_id = ?
-  `).run(orderResponse.id, captureId, now, intentId);
+  `).run(targetOrderId, captureId, now, intentId);
 
   const finalAudit = verifyAuditLedger(db);
 
@@ -1255,7 +1375,7 @@ export async function executeApprovedStepUp(
     mandateId: proposal.mandate_id,
     verdict: 'ALLOW',
     status: 'CAPTURED',
-    orderId: orderResponse.id,
+    orderId: targetOrderId,
     captureId,
     auditValid: finalAudit.valid,
   };

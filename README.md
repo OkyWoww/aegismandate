@@ -4,7 +4,7 @@
 > *Architectural Isolation, Deterministic Policy Gating, and Cryptographic Audit for Untrusted Autonomous Shopping Agents*
 
 [![CI / Static Checks](https://img.shields.io/badge/TypeScript-Strict%20Checked-blue?logo=typescript)](https://github.com/OkyWoww/mandatepay)
-[![Vitest Test Suite](https://img.shields.io/badge/Vitest-190%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
+[![Vitest Test Suite](https://img.shields.io/badge/Vitest-195%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
 [![Attack Suite](https://img.shields.io/badge/Attack%20Suite-12%2F12%20Blocked-success)](https://github.com/OkyWoww/mandatepay)
 [![PayPal Live Sandbox](https://img.shields.io/badge/PayPal%20Sandbox-Live%20Verified-003087?logo=paypal)](https://github.com/OkyWoww/mandatepay)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -109,11 +109,12 @@ flowchart TD
 - **Zero-I/O Determinism**: `packages/policy` contains pure functions with zero network I/O, guaranteeing non-malleable budget deduction and SKU constraint validation (`INV-5`).
 
 ### Plan B Architecture & Blast Radius Containment
-AegisMandate formally operates on **Plan B (Human-in-the-Loop / Server-Gated Approval Link Flow)**. The user-issued mandate functions as a **cryptographic bounding box (blast radius containment plane)**:
-- **Bounded Financial Loss**: The policy engine guarantees that financial loss is strictly bounded by `per_txn_limit` and `total_budget`. Even if the autonomous agent is completely compromised by adversarial prompt injection, runaway charges or unbounded losses are mathematically impossible.
-- **Payee Immutability (`INV-2`)**: Funds can only flow to merchants registered in the trusted server-side Merchant Registry. Injected payee emails or smuggled wallet addresses inside proposals are rejected.
-- **Server-Gated Step-Up**: Out-of-band requests trigger step-up review (`STEP_UP`), generating an approval link (`rel: approve`) bound to a canonical payload hash (`FR-28`).
-- **Residual Risk Analysis**: Full mathematical proofs, threat vectors, and mitigation matrices are documented in [`docs/risk.md`](docs/risk.md).
+AegisMandate formally operates on **Plan B (Human-in-the-Loop / Server-Gated Approval Link Flow)**. The user-issued mandate functions as a **deterministic blast-radius containment perimeter backed by a tamper-evident cryptographic ledger**:
+- **Bounded Financial Loss**: The policy engine deterministically bounds financial blast radius by `min(per_txn_limit, remaining_budget)`. Even if the autonomous agent is completely compromised by adversarial prompt injection or hallucination, runaway charges or unbounded losses are prevented by policy invariants (verified via `fast-check` property testing in `packages/policy`).
+- **Payee Immutability (`INV-2`)**: Funds can only flow to merchants registered in the trusted server-side Merchant Registry (`createMandatePayPalOrder`). Injected payee emails or smuggled wallet addresses inside proposals are rejected before PayPal order creation (verified by Vitest spy test across the attack suite).
+- **Order Substitution Hardening (Priority 1)**: The executor strictly reads `order_id` from the database (client-supplied order IDs are stripped from request schemas) and enforces pre-capture pre-flight validation on status (`APPROVED`), verified totals, reference ID, and payee.
+- **Server-Gated Step-Up & Plan B Lifecycle**: High-value or out-of-band requests trigger step-up review (`STEP_UP`), generating an approval link (`rel: approve`) bound to a canonical payload hash (`FR-28`). Capture occurs only after payer approval is verified.
+- **Honest Residual Risk Framing**: We do not claim cryptographic impossibility of LLM manipulation—natural language models are inherently stochastic. Instead, AegisMandate ensures that any adversarial or erroneous output from the LLM has a strictly bounded financial blast radius. Full mathematical bounds, threat vectors, and mitigation matrices are documented in [`docs/risk.md`](docs/risk.md).
 
 ---
 

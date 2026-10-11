@@ -119,6 +119,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         status: result.status,
         order_id: result.orderId,
         capture_id: result.captureId,
+        approve_url: result.approveUrl,
         decision: result.decision,
       });
     }
@@ -214,13 +215,12 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   // --------------------------------------------------------------------------
   app.post<{
     Params: { id: string };
-    Body?: { expected_payload_hash?: string; paypal_order_id?: string; order_id?: string };
+    Body?: { expected_payload_hash?: string };
   }>(
     '/v1/intents/:id/approve',
     async (request, reply) => {
       const { id } = request.params;
       const expectedPayloadHash = request.body?.expected_payload_hash;
-      const approvedOrderId = request.body?.paypal_order_id ?? request.body?.order_id;
 
       const row = db
         .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
@@ -256,7 +256,6 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         db,
         hmacKey,
         expectedPayloadHash,
-        approvedOrderId,
         now: getNow(),
       });
 
@@ -273,6 +272,16 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
           error: result.refusalReason ?? 'APPROVAL_EXECUTION_FAILED',
           message: `Approval execution failed: ${result.refusalReason}`,
           refusal_reason: result.refusalReason,
+        });
+      }
+
+      if (result.status === 'AWAITING_PAYER_APPROVAL') {
+        return reply.code(200).send({
+          status: 'AWAITING_PAYER_APPROVAL',
+          intent_id: result.intentId,
+          order_id: result.orderId,
+          approve_url: result.approveUrl,
+          message: 'Order created on PayPal; awaiting payer approval before capture',
         });
       }
 

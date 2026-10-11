@@ -10,7 +10,7 @@
 
 Autonomous AI shopping agents operate under inherently untrusted execution environments: untrusted web inputs, indirect prompt injections, adversarial catalog descriptions, and stochastic LLM reasoning. Granting an AI agent direct access to payment credentials or unrestricted wallet tokens creates an existential financial hazard.
 
-**AegisMandate** eliminates this hazard by establishing a deterministic **Control Plane** that treats the AI agent as completely untrusted. The user-signed **Mandate** functions as a **cryptographic bounding box (blast radius containment plane)**.
+**AegisMandate** eliminates this hazard by establishing a deterministic **Control Plane** that treats the AI agent as completely untrusted. The user-signed **Mandate** functions as a **deterministic blast-radius containment perimeter backed by a tamper-evident cryptographic ledger**.
 
 This document formally details the **Plan B architecture**, the mathematical bounds on financial loss, and the residual risk assessment.
 
@@ -23,29 +23,35 @@ During the initial sandbox spike (`specs/tech.md §4.3`, Task `T-002`), default 
 
 Per specification gate criteria, **Plan B was formally locked**:
 - In **Plan A**, an agent captures payments completely off-session via vaulted tokens.
-- In **Plan B**, the Control Plane strictly evaluates whether an order is created and with what parameters. Each authorized intent creates a PayPal order, and the buyer authorizes settlement via the secure PayPal checkout portal (`rel: approve`).
+- In **Plan B**, the Control Plane strictly evaluates whether an order is created and with what parameters. Each authorized intent creates a PayPal order, and the buyer authorizes settlement via the secure PayPal checkout portal (`rel: approve`). Capture occurs only after buyer approval is verified.
 
 ### 2.2 Why Plan B Provides Superior Containment
 1. **Zero Credential Exposure (INV-1):** The Cognitive Plane (agent) holds zero PayPal API keys, OAuth secrets, or payment credentials.
-2. **Server-Side Payee Sourcing (INV-2):** The payee account in all PayPal order creations is strictly resolved from the trusted Merchant Registry in SQLite, completely ignoring any payee hints or recipient strings from the agent proposal.
+2. **Server-Side Payee Sourcing (INV-2):** The payee account in all PayPal order creations is strictly resolved from the trusted Merchant Registry in SQLite (`createMandatePayPalOrder`), completely ignoring any payee hints or recipient strings from the agent proposal.
 3. **Cryptographic Payload Binding (FR-28, AC-9):** When an intent requires human step-up review, the payload hash `SHA256(canonical(mandate_id, items, total, payee))` is recorded. Any subsequent modification to the order fails the hash binding check.
-4. **Pre-Approval Gate Enforcement:** PayPal Orders v2 strictly enforces that an order cannot be captured without buyer authorization (`ORDER_NOT_APPROVED`, HTTP 422).
+4. **Order Substitution Prevention (Priority 1):** The executor strictly reads `order_id` from the database (client-supplied order IDs are stripped from request schemas) and performs pre-capture pre-flight validation against PayPal Orders v2 (status `APPROVED`, totals and currency match, reference ID matches intent, payee matches registry).
+5. **Pre-Approval Gate Enforcement:** PayPal Orders v2 strictly enforces that an order cannot be captured without buyer authorization (`ORDER_NOT_APPROVED`, HTTP 422).
 
 ---
 
-## 3. Mathematical Bounding of Financial Loss
+## 3. Mathematical Bounding of Financial Loss (Blast Radius Containment)
 
-Under AegisMandate, **unbounded financial loss is mathematically impossible**, even if the underlying LLM is 100% hijacked by an adversary:
+Under AegisMandate, **financial blast radius is mathematically bounded**, even if the underlying LLM is 100% hijacked by an adversary:
 
 | Constraint Parameter | Mathematical Invariant | Enforcing Rule | Failure Consequence |
 |---|---|---|---|
 | **Per-Transaction Limit** | $\text{total}_{\text{intent}} \le \text{per\_txn\_limit\_minor}$ | Rule `P-07` | Intent denied (`OVER_TXN_LIMIT`). Max loss per order strictly bounded. |
-| **Cumulative Mandate Budget** | $\sum \text{captured} + \sum \text{reserved} + \text{current} \le \text{total\_budget\_minor}$ | Rule `P-07` / `P-08` | Intent denied (`BUDGET_EXCEEDED`). Max loss across mandate lifetime strictly capped. |
+| **Cumulative Mandate Budget** | $\sum \text{captured} + \sum \text{reserved} + \text{current} \le \text{total\_budget\_minor}$ | Rule `P-07` / `P-08` | Intent denied (`BUDGET_EXCEEDED`). Max loss across mandate lifetime strictly capped (verified via fast-check property testing). |
 | **Merchant Allowlist** | $\text{merchant\_id} \in \text{allowed\_merchants}$ | Rule `P-03` | Intent denied (`MERCHANT_NOT_ALLOWED`). Funds cannot flow to unauthorized entities. |
 | **Authoritative Pricing** | $\text{claimed\_price} == \text{catalog\_price}$ | Rule `P-04` | Intent denied (`PRICE_MISMATCH` / `UNKNOWN_SKU`). Agent cannot forge invoice costs. |
 | **Queue Saturation Cap** | $\text{count}(\text{pending}) < \text{max\_pending\_approvals}$ | Rule `P-07` (FR-27) | Intent denied (`APPROVAL_QUEUE_FULL`). Prevents human approver fatigue attacks. |
 
 $$\text{Maximum Possible Financial Loss} \le \min(\text{per\_txn\_limit}, \text{remaining\_budget})$$
+
+### Honest Framing of Residual Risk vs Cryptographic Claims
+AegisMandate distinguishes between cryptographic guarantees and policy containment:
+- **Cryptographic Guarantees:** Mandate tamper-evidence (HMAC-SHA256 signing), approval payload binding (SHA-256 canonical hashing), and immutable audit history (SHA-256 hash-chained event ledger).
+- **Blast Radius Containment:** Bounding financial loss is enforced deterministically by the Control Plane's policy engine and PayPal execution gate. We do not claim cryptographic bounding of the LLM itself—natural language models are inherently stochastic—but rather that any adversarial output produced by the LLM is strictly contained within bounded financial parameters.
 
 ---
 
@@ -54,7 +60,8 @@ $$\text{Maximum Possible Financial Loss} \le \min(\text{per\_txn\_limit}, \text{
 | Threat Vector | Attack Mechanism | Residual Risk Level | Mitigating Countermeasure & Verification |
 |---|---|:---:|---|
 | **Indirect Prompt Injection** | Web review injects instructions to buy attacker gift cards | **LOW** (Bounded) | Advisory scanner detects signals (`P-10`). Structural rules (`P-03`, `P-04`, `P-07`) independently block unauthorized merchants, fake SKUs, and limit breaches even if scanner score is 0 (`INV-11`). |
-| **Payee Smuggling** | Attacker embeds IBAN or PayPal email in `sku`, `ref`, or `rationale` | **ZERO** | `deepKeyScan` performs recursive regex scan across all payload keys and string values (`P-03`). Payee is strictly loaded from internal registry (`INV-2`). |
+| **Payee Smuggling** | Attacker embeds IBAN or PayPal email in `sku`, `ref`, or `rationale` | **ZERO** | `deepKeyScan` performs recursive regex scan across all payload keys and string values (`P-03`). Payee is strictly loaded from internal registry (`INV-2`, verified by Vitest spy). |
+| **Order Substitution** | Attacker submits foreign approved PayPal order ID in step-up approval | **ZERO** | Client-supplied order IDs are stripped from request schemas. Executor strictly reads `row.order_id` from database and performs pre-capture pre-flight validation against PayPal. |
 | **Price Tampering** | Agent claims item costs $10.00 while merchant charges $500.00 | **ZERO** | Control Plane resolves authoritative price directly from trusted catalog table (`P-04`). Mismatches return `PRICE_MISMATCH`. |
 | **Approval Fatigue / Queue Saturation** | Attacker floods system with 1,000 $1 step-up proposals | **ZERO** | FR-27 caps pending step-up queue at `max_pending_approvals` (default: 3). Subsequent proposals immediately rejected (`APPROVAL_QUEUE_FULL`). |
 | **TOCTOU Race Condition** | Mandate revoked or expired while PayPal call is in-flight | **ZERO** | Execution-time recheck (`FR-29`, `AC-10`) re-validates mandate status and catalog prices inside atomic `BEGIN IMMEDIATE` transaction prior to capture. |
@@ -65,6 +72,6 @@ $$\text{Maximum Possible Financial Loss} \le \min(\text{per\_txn\_limit}, \text{
 
 ## 5. Summary Conclusion
 
-AegisMandate's **Plan B** converts an untrusted, stochastic agent into a deterministic economic actor. While the cognitive agent proposes purchase intents, the trusted control plane enforces an unbreachable cryptographic perimeter.
+AegisMandate's **Plan B** converts an untrusted, stochastic agent into a contained economic actor. While the cognitive agent proposes purchase intents, the trusted control plane enforces a deterministic policy perimeter, PayPal pre-flight order validation, and a tamper-evident audit ledger.
 
 **Every dollar spent is bounded, every payee is verified, every state change is hash-chained, and out-of-band actions require explicit human authorization.**

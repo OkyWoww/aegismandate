@@ -131,6 +131,14 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
   let captureCallCount = 0;
   let verifyWebhookCount = 0;
   let webhookVerificationResult: 'SUCCESS' | 'FAILURE' = 'SUCCESS';
+  interface ServerMockOrder {
+    id: string;
+    status: string;
+    intent: string;
+    purchase_units: unknown[];
+    links: Array<{ rel: string; href: string }>;
+  }
+  const serverOrdersMap = new Map<string, ServerMockOrder>();
 
   beforeEach(async () => {
     db = openDb(':memory:');
@@ -166,6 +174,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     captureCallCount = 0;
     verifyWebhookCount = 0;
     webhookVerificationResult = 'SUCCESS';
+    serverOrdersMap.clear();
 
     payPalClient = new PayPalClient({
       clientId: 'sandbox_client_id_server',
@@ -193,13 +202,79 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
             });
           }
           orderCallCount++;
+          let reqBody: { intent?: string; purchase_units?: unknown[] } = {};
+          try {
+            reqBody = JSON.parse(init?.body as string);
+          } catch {
+            // ignore
+          }
+          const createdId = orderCallCount === 1 ? 'ORDER-HTTP-OK' : `ORDER-HTTP-${orderCallCount}`;
+          const orderObj = {
+            id: createdId,
+            status: 'APPROVED',
+            intent: reqBody.intent || 'CAPTURE',
+            purchase_units: reqBody.purchase_units || [],
+            links: [{ rel: 'approve', href: `https://sandbox.paypal.com/checkoutnow?token=${createdId}` }],
+          };
+          serverOrdersMap.set(createdId, orderObj);
+
           return new Response(
             JSON.stringify({
-              id: 'ORDER-HTTP-OK',
+              id: createdId,
               status: 'CREATED',
-              links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-HTTP-OK' }],
+              links: [{ rel: 'approve', href: `https://sandbox.paypal.com/checkoutnow?token=${createdId}` }],
             }),
             { status: 201 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders') && (!init || init.method === 'GET')) {
+          const parts = urlStr.split('/orders/');
+          const orderId = parts[1]?.split('?')[0] || 'ORDER-HTTP-1';
+          if (orderId === 'ORDER-FOREIGN-UNAPPROVED') {
+            return new Response(
+              JSON.stringify({
+                id: orderId,
+                status: 'CREATED', // Not APPROVED -> fails preflight
+                purchase_units: [{ reference_id: 'int_foreign', amount: { currency_code: 'USD', value: '10.00' } }],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          if (orderId === 'ORDER-FOREIGN-WRONG-PAYEE') {
+            return new Response(
+              JSON.stringify({
+                id: orderId,
+                status: 'APPROVED',
+                purchase_units: [
+                  {
+                    reference_id: 'int_test_foreign',
+                    amount: { currency_code: 'USD', value: '45.00' },
+                    payee: { email_address: 'attacker@evil.com' },
+                  },
+                ],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          if (serverOrdersMap.has(orderId)) {
+            return new Response(JSON.stringify(serverOrdersMap.get(orderId)), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              id: orderId,
+              status: 'APPROVED',
+              purchase_units: [
+                {
+                  reference_id: 'int_http_stepup_flow_02',
+                  amount: { currency_code: 'USD', value: '45.00' },
+                  payee: { email_address: 'merchant@demo-store.local' },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
           );
         }
         return new Response('Not Found', { status: 404 });
@@ -489,7 +564,8 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     expect(capturedPayload.capture_id).toBe('CAPTURE-HTTP-OK');
     expect(capturedPayload.order_id).toBe('ORDER-HTTP-OK');
 
-    // 5. Test direct approval passing an existing approved PayPal order ID
+    // 5. Priority 1: Prevent Order Substitution Vulnerability (Claude Round 4)
+    // Client attempts to supply a foreign PayPal order ID in request body:
     const directOrderProposal: PurchaseIntentProposal = {
       intent_id: 'int_http_stepup_direct_order',
       mandate_id: mandateId,
@@ -512,15 +588,48 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       method: 'POST',
       url: '/v1/intents/int_http_stepup_direct_order/approve',
       payload: {
-        paypal_order_id: '0VJ350000M292973P',
+        paypal_order_id: 'ORDER-FOREIGN-ATTACKER',
       },
     });
 
     expect(directApproveRes.statusCode).toBe(200);
     const directBody = JSON.parse(directApproveRes.body);
-    expect(directBody.order_id).toBe('0VJ350000M292973P');
+    expect(directBody.order_id).toBe('ORDER-HTTP-2'); // Legitimate order created by server, not client-supplied
+    expect(directBody.order_id).not.toBe('ORDER-FOREIGN-ATTACKER');
     expect(directBody.status).toBe('CAPTURED');
     expect(directBody.capture_id).toBe('CAPTURE-HTTP-OK');
+  });
+
+  it('Priority 1: Rejects approval when PayPal order pre-flight validation fails (wrong status or payee)', async () => {
+    // 1. Propose lamp
+    const proposal: PurchaseIntentProposal = {
+      intent_id: 'int_http_preflight_fail_01',
+      mandate_id: mandateId,
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-DESK-LAMP', qty: 1, claimed_unit_price_minor: 4500 }],
+      claimed_total_minor: 4500,
+      currency: 'USD',
+      user_goal_ref: 'msg_preflight_fail',
+      rationale: 'Step up for preflight failure test',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_preflight_fail', trust: 'user' }] },
+    };
+
+    await server.inject({
+      method: 'POST',
+      url: '/v1/intents/propose',
+      payload: proposal,
+    });
+
+    // Simulate database record having an order that fails pre-flight validation (wrong payee)
+    db.prepare("UPDATE executed_intents SET order_id = 'ORDER-FOREIGN-WRONG-PAYEE' WHERE intent_id = 'int_http_preflight_fail_01'").run();
+
+    const approveRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_preflight_fail_01/approve',
+    });
+
+    expect(approveRes.statusCode).toBe(400);
+    expect(JSON.parse(approveRes.body).refusal_reason).toBe('PREFLIGHT_VALIDATION_FAILED');
   });
 
   // --------------------------------------------------------------------------

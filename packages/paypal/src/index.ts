@@ -44,6 +44,7 @@ export interface PayPalOrderResponse {
   intent: 'CAPTURE' | 'AUTHORIZE';
   purchase_units?: Array<{
     reference_id?: string;
+    custom_id?: string;
     payee?: {
       email_address?: string;
       merchant_id?: string;
@@ -168,6 +169,8 @@ export function minorUnitsToDecimal(minor: number): string {
  * Enables zero-external-dependency local testing, CI runs, and developer orchestration.
  */
 export function createMockPayPalFetch(): typeof fetch {
+  const ordersMap = new Map<string, Record<string, unknown>>();
+
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const urlStr = String(input);
     // OAuth 2.0 Token
@@ -183,6 +186,12 @@ export function createMockPayPalFetch(): typeof fetch {
 
     // Capture Order
     if (urlStr.includes('/capture') && init?.method === 'POST') {
+      const parts = urlStr.split('/orders/');
+      const orderId = parts[1]?.split('/capture')[0];
+      if (orderId && ordersMap.has(orderId)) {
+        const o = ordersMap.get(orderId)!;
+        o['status'] = 'COMPLETED';
+      }
       const captureId = `CAPTURE-SANDBOX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
       return new Response(
         JSON.stringify({
@@ -204,17 +213,20 @@ export function createMockPayPalFetch(): typeof fetch {
         // ignore
       }
       const orderId = `ORDER-SANDBOX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+      const orderData: Record<string, unknown> = {
+        id: orderId,
+        status: 'APPROVED',
+        intent: body.intent || 'CAPTURE',
+        purchase_units: body.purchase_units || [],
+        links: [
+          { href: `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`, rel: 'approve', method: 'GET' },
+          { href: `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, rel: 'capture', method: 'POST' },
+        ],
+      };
+      ordersMap.set(orderId, orderData);
+
       return new Response(
-        JSON.stringify({
-          id: orderId,
-          status: 'CREATED',
-          intent: body.intent || 'CAPTURE',
-          purchase_units: body.purchase_units || [],
-          links: [
-            { href: `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`, rel: 'approve', method: 'GET' },
-            { href: `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, rel: 'capture', method: 'POST' },
-          ],
-        }),
+        JSON.stringify(orderData),
         { status: 201, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -223,10 +235,14 @@ export function createMockPayPalFetch(): typeof fetch {
     if (urlStr.includes('/v2/checkout/orders/') && (!init || init.method === 'GET')) {
       const parts = urlStr.split('/orders/');
       const orderId = parts[1]?.split('?')[0] || 'ORDER-SANDBOX-MOCK';
+      const saved = ordersMap.get(orderId);
+      if (saved) {
+        return new Response(JSON.stringify(saved), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       return new Response(
         JSON.stringify({
           id: orderId,
-          status: 'COMPLETED',
+          status: 'APPROVED',
           intent: 'CAPTURE',
           purchase_units: [],
         }),

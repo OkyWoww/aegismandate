@@ -116,7 +116,8 @@ mandatepay/
 | **T-009** | **Full Policy Engine**    | 🟢 COMPLETED | Full policy engine P-00..P-12, pure function, precedence (`Phase 2`) |
 | **T-010** | **Advisory Scanner**     | 🟢 COMPLETED | Prompt injection & advisory risk heuristics (`spec.md §5, §6`, `Phase 2`) |
 | **T-011** | **Complete Attack Suite**| 🟢 COMPLETED | Automated A-01..A-12 validation matrix & security invariants (`spec.md §6, §7`, `Phase 2`) |
-| **T-012** | **Pending Cap & Races**  | 🟡 READY     | Pending-approval cap + reservation accounting + concurrency (`Phase 2`) |
+| **T-012** | **Shopper Agent Harness** | 🟢 COMPLETED | Untrusted Cognitive Plane runtime + Fake LLM + strict schemas (`apps/agent`, `Phase 3`) |
+| **T-013** | **Step-Up Approval Queue**| 🟡 READY     | Human-in-the-loop step-up queue, timeouts, and authorization (`Phase 3`) |
 
 ### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
 

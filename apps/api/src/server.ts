@@ -212,11 +212,15 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   // --------------------------------------------------------------------------
   // Human Step-Up Approval (FR-16, FR-18, FR-28, FR-29, AC-9)
   // --------------------------------------------------------------------------
-  app.post<{ Params: { id: string }; Body?: { expected_payload_hash?: string } }>(
+  app.post<{
+    Params: { id: string };
+    Body?: { expected_payload_hash?: string; paypal_order_id?: string; order_id?: string };
+  }>(
     '/v1/intents/:id/approve',
     async (request, reply) => {
       const { id } = request.params;
       const expectedPayloadHash = request.body?.expected_payload_hash;
+      const approvedOrderId = request.body?.paypal_order_id ?? request.body?.order_id;
 
       const row = db
         .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
@@ -252,6 +256,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         db,
         hmacKey,
         expectedPayloadHash,
+        approvedOrderId,
         now: getNow(),
       });
 

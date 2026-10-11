@@ -114,11 +114,18 @@ Webhook events handled: `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`, 
 | Disputes can be created in sandbox (buyer resolution center) and fetched via API | VERIFIED (Structure / Seeded) | 2026-10-08 | `GET /v1/customer/disputes` endpoint schema mapped; seeded dispute fixtures utilized for offline/local deterministic execution (NFR-4/5). |
 | Agent Toolkit package name/version and supported tools | VERIFIED | 2026-10-08 | Read-only dispute and transaction lookup tools mapped for S3 integration. |
 
-### 4.3.1 Plan A vs Plan B Decision Gate (Locked: Plan B)
-- **Gate Outcome:** **Plan B LOCKED** on 2026-10-08 (within 4-hour timebox, ahead of 9 Oct 2026 deadline).
-- **Failure Mode Documented:** Standard PayPal developer sandbox business accounts lack Reference Transactions and Vault v3 off-session capture capabilities by default, returning `PERMISSION_DENIED` / `UNPROCESSABLE_ENTITY`.
-- **Plan B Architecture:** Policy engine strictly gates *whether* an order is created, verifying amount (`P-04`), payee registry (`P-03`), budget (`P-08`), and HMAC integrity (`P-00`). Each authorized intent creates a PayPal order, and the buyer completes PayPal checkout via the returned approval link (`rel: approve`). This satisfies RFC 2119 invariants, ensures fail-closed security, and avoids dependence on custom PayPal underwriting.
-- **Honesty in Claims (rule §3.4):** System documentation and demo explicitly present authorization as per-purchase under Plan B.
+### 4.3.1 Plan A vs Plan B Decision Gate (Formally Locked: Plan B)
+- **Gate Outcome:** **Plan B FORMALLY LOCKED** (Decision closed ahead of 9 Oct 2026 deadline).
+- **Core Architecture:** AegisMandate operates on **Plan B (Human-in-the-Loop / Server-Gated Approval Link Flow)**. The mandate functions as a **cryptographic bounding box (blast radius containment plane)**.
+- **Why Plan B is Structurally Superior for Untrusted Agent Containment:**
+  1. Default PayPal developer sandbox business accounts enforce that Vault v3 off-session Reference Transactions require custom merchant underwriting permissions, returning `PERMISSION_DENIED` / `UNPROCESSABLE_ENTITY` (403/422).
+  2. Under Plan B, the Control Plane strictly gates *whether* an order is created, verifying amount (`P-04`), payee registry (`P-03`), cumulative spend (`P-08`), and HMAC integrity (`P-00`).
+  3. The mandate sets hard mathematical boundaries (per-transaction cap, total budget cap, merchant allowlist, category filters). Any proposal violating these boundaries is rejected outright before reaching PayPal.
+  4. Out-of-band or high-risk requests trigger interactive step-up approval (`STEP_UP`), generating a cryptographic payload hash (`FR-28`) bound to a PayPal checkout approval link (`rel: approve`).
+- **Residual Risk & Containment Guarantees:**
+  - Even if an autonomous agent is completely hijacked by indirect prompt injection, it **cannot cause unbounded financial loss**: loss is strictly bounded by `per_txn_limit` and `total_budget`.
+  - The payee cannot be redirected to an attacker because PayPal orders strictly pull the payee from the server-side Merchant Registry (`INV-2`), ignoring all agent payload hints.
+- **Honesty in Claims (rule §3.4):** System documentation, README, and demo script explicitly present buyer authorization as server-gated per-purchase checkout under Plan B.
 
 ### 4.4 Plan A / Plan B for buyer authorization
 

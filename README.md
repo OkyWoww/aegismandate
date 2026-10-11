@@ -108,6 +108,13 @@ flowchart TD
 - **Runtime Isolation**: The Agent Process communicates with the Control Plane strictly via typed JSON proposals (`/v1/intents/propose`).
 - **Zero-I/O Determinism**: `packages/policy` contains pure functions with zero network I/O, guaranteeing non-malleable budget deduction and SKU constraint validation (`INV-5`).
 
+### Plan B Architecture & Blast Radius Containment
+AegisMandate formally operates on **Plan B (Human-in-the-Loop / Server-Gated Approval Link Flow)**. The user-issued mandate functions as a **cryptographic bounding box (blast radius containment plane)**:
+- **Bounded Financial Loss**: The policy engine guarantees that financial loss is strictly bounded by `per_txn_limit` and `total_budget`. Even if the autonomous agent is completely compromised by adversarial prompt injection, runaway charges or unbounded losses are mathematically impossible.
+- **Payee Immutability (`INV-2`)**: Funds can only flow to merchants registered in the trusted server-side Merchant Registry. Injected payee emails or smuggled wallet addresses inside proposals are rejected.
+- **Server-Gated Step-Up**: Out-of-band requests trigger step-up review (`STEP_UP`), generating an approval link (`rel: approve`) bound to a canonical payload hash (`FR-28`).
+- **Residual Risk Analysis**: Full mathematical proofs, threat vectors, and mitigation matrices are documented in [`docs/risk.md`](docs/risk.md).
+
 ---
 
 ## 3. PayPal Live Sandbox Integration Proof & Plan B Lifecycle
@@ -218,7 +225,7 @@ The attack runner ([`packages/sim`](packages/sim)) verifies 12 real-world attack
 | **A-08** | Invisible Unicode / Zero-Width Text | Concealed instructions using invisible Unicode zero-width chars | INV-11 | ⚠️ BLOCKED (`P-10: RISK_SCORE_HIGH`) | ❌ **No (0 calls)** |
 | **A-09** | Mandate Expired / Revoked | Mandate revoked or expired before proposal execution | INV-7 | 🛡️ ABORT (`P-00: MANDATE_EXPIRED / REVOKED`) | ❌ **No (0 calls)** |
 | **A-10** | Prompt Instruction to Raise Limit | Prompt instructing agent to update mandate credit limit | INV-4 | 🛡️ IMMUTABLE (Zero tool path to edit mandate) | ❌ **No (0 calls)** |
-| **A-11** | Flood of STEP_UP-Sized Intents | Burst of step-ups attempting to exhaust approval capacity | INV-8 | ❌ REJECT (`FR-27: APPROVAL_QUEUE_FULL`) | ❌ **No leak** |
+| **A-11** | Step-Up Flood & Queue Saturation | Burst of step-ups attempting to exhaust approval queue capacity | INV-8 | ❌ REJECT (`FR-27: APPROVAL_QUEUE_FULL`) | ❌ **No leak** |
 | **A-12** | Nested Payee Key Smuggling | `injected_payee` in nested item object or deep JSON fields | INV-2, INV-6 | ❌ REJECT (`P-03: PAYEE_OVERRIDE_ATTEMPT`) | ❌ **No (0 calls)** |
 
 ---

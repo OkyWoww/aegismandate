@@ -105,12 +105,12 @@ export const ATTACK_SCENARIOS: AttackTestCase[] = [
   },
   {
     id: 'A-11',
-    name: 'Step-Up Flood & Budget Over-Commitment',
-    description: 'Flood of STEP_UP-sized intents to over-commit budget or exhaust approver attention',
-    vector: 'Submitting multiple STEP_UP proposals that would exceed budget or max_pending_approvals',
-    expectedOutcome: 'ALERT',
+    name: 'Step-Up Flood & Queue Saturation (FR-27)',
+    description: 'Flood of STEP_UP-sized intents to over-commit budget or exhaust approver attention (FR-27, INV-8)',
+    vector: 'Submitting multiple STEP_UP proposals that would exceed budget or max_pending_approvals queue capacity',
+    expectedOutcome: 'REJECT',
     invariant: 'INV-8',
-    blockedBy: 'Reservation Accounting (APPROVAL_QUEUE_FULL, captured+reserved never exceeds budget)',
+    blockedBy: 'Queue Saturation Guard (FR-27: APPROVAL_QUEUE_FULL, captured+reserved never exceeds budget)',
   },
   {
     id: 'A-12',

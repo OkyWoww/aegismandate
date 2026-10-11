@@ -478,6 +478,49 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       .prepare("SELECT actor, type FROM audit_events WHERE type = 'INTENT_APPROVED' AND ref = ?")
       .get('int_http_stepup_flow_02') as { actor: string; type: string } | undefined;
     expect(approvedEvent?.actor).toBe('user');
+
+    // Verify audit log recorded ORDER_CAPTURED with authentic capture ID
+    const capturedEvent = db
+      .prepare("SELECT actor, type, payload FROM audit_events WHERE type = 'ORDER_CAPTURED' AND ref = ?")
+      .get('int_http_stepup_flow_02') as { actor: string; type: string; payload: string } | undefined;
+    expect(capturedEvent?.actor).toBe('control_plane');
+    expect(capturedEvent?.type).toBe('ORDER_CAPTURED');
+    const capturedPayload = JSON.parse(capturedEvent!.payload);
+    expect(capturedPayload.capture_id).toBe('CAPTURE-HTTP-OK');
+    expect(capturedPayload.order_id).toBe('ORDER-HTTP-OK');
+
+    // 5. Test direct approval passing an existing approved PayPal order ID
+    const directOrderProposal: PurchaseIntentProposal = {
+      intent_id: 'int_http_stepup_direct_order',
+      mandate_id: mandateId,
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-DESK-LAMP', qty: 1, claimed_unit_price_minor: 4500 }],
+      claimed_total_minor: 4500,
+      currency: 'USD',
+      user_goal_ref: 'msg_direct_order',
+      rationale: 'Direct approved order capture',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_direct_order', trust: 'user' }] },
+    };
+
+    await server.inject({
+      method: 'POST',
+      url: '/v1/intents/propose',
+      payload: directOrderProposal,
+    });
+
+    const directApproveRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_stepup_direct_order/approve',
+      payload: {
+        paypal_order_id: '0VJ350000M292973P',
+      },
+    });
+
+    expect(directApproveRes.statusCode).toBe(200);
+    const directBody = JSON.parse(directApproveRes.body);
+    expect(directBody.order_id).toBe('0VJ350000M292973P');
+    expect(directBody.status).toBe('CAPTURED');
+    expect(directBody.capture_id).toBe('CAPTURE-HTTP-OK');
   });
 
   // --------------------------------------------------------------------------
@@ -606,5 +649,42 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
 
     expect(forgeRes.statusCode).toBe(400);
     expect(JSON.parse(forgeRes.body).error).toBe('INVALID_WEBHOOK_SIGNATURE');
+  });
+
+  it('AC-6 / INV-10: Spoofed PayPal webhooks are rejected with 400 INVALID_WEBHOOK_SIGNATURE when signature verification fails', async () => {
+    webhookVerificationResult = 'FAILURE';
+    const spoofedWebhookPayload = {
+      id: 'WH-SPOOFED-ATTACK-01',
+      event_type: 'PAYMENT.CAPTURE.COMPLETED',
+      resource: {
+        id: 'CAP-SPOOFED-999',
+        status: 'COMPLETED',
+        amount: { value: '500.00', currency_code: 'USD' },
+      },
+    };
+
+    const res = await server.inject({
+      method: 'POST',
+      url: '/v1/webhooks/paypal',
+      headers: {
+        'paypal-auth-algo': 'SHA256withRSA',
+        'paypal-cert-url': 'https://api.sandbox.paypal.com/v1/notifications/certs/CERT-123',
+        'paypal-transmission-id': 'transmission_spoofed_attack',
+        'paypal-transmission-sig': 'forged_rsa_signature_bytes==',
+        'paypal-transmission-time': '2026-10-20T10:00:00Z',
+      },
+      payload: spoofedWebhookPayload,
+    });
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('INVALID_WEBHOOK_SIGNATURE');
+    expect(body.message).toBe('PayPal webhook signature verification failed');
+
+    // Verify audit ledger has zero rogue captured events from the spoofed webhook
+    const rogueEvents = db
+      .prepare("SELECT * FROM audit_events WHERE ref = 'WH-SPOOFED-ATTACK-01'")
+      .all();
+    expect(rogueEvents).toHaveLength(0);
   });
 });

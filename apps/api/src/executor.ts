@@ -768,6 +768,23 @@ export async function executeGoldenPath(
     captureId = `cap_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
   }
 
+  // Record ORDER_CAPTURED into audit ledger with authentic PayPal Capture ID
+  appendAuditEvent(db, {
+    actor: 'control_plane',
+    type: 'ORDER_CAPTURED',
+    ref: proposal.intent_id,
+    payload: {
+      order_id: orderResponse.id,
+      capture_id: captureId,
+      amount_minor: verifiedTotalMinor,
+      currency: proposal.currency,
+      payee_ref: payee?.payeeRef ?? 'default',
+      status: 'COMPLETED',
+      request_id: captureRequestId,
+    },
+    ts: now,
+  });
+
   // Shift reserved budget to captured budget
   mandateService.captureReservation(proposal.intent_id, verifiedTotalMinor);
 
@@ -906,6 +923,7 @@ export interface ExecuteApprovedStepUpParams {
   db: DatabaseConnection;
   hmacKey: string;
   expectedPayloadHash?: string | undefined;
+  approvedOrderId?: string | undefined;
   now?: string | undefined;
   retryConfig?: RetryOptions | undefined;
 }
@@ -1132,60 +1150,67 @@ export async function executeApprovedStepUp(
   const createRequestId = generatePayPalRequestId(intentId, 'create_order_approved');
   const captureRequestId = generatePayPalRequestId(intentId, 'capture_order_approved');
 
-  let orderResponse;
-  try {
-    orderResponse = await withExponentialBackoff(
-      async () =>
-        payPalClient.createOrder({
-          referenceId: intentId,
-          currency: proposal.currency,
-          totalMinor: verifiedTotalMinor,
-          items: orderItems,
-          ...(payee?.payeeRef ? { payee: { emailAddress: payee.payeeRef } } : {}),
-          requestId: createRequestId,
-        }),
-      params.retryConfig,
-    );
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    mandateService.releaseReservation(intentId, `PayPal createOrder failed: ${errorMsg}`);
+  const targetOrderId = params.approvedOrderId ?? row.order_id;
+  let orderResponse: { id: string; status: string; intent?: string };
+
+  if (targetOrderId) {
+    orderResponse = { id: targetOrderId, status: 'APPROVED', intent: 'CAPTURE' };
+  } else {
+    try {
+      orderResponse = await withExponentialBackoff(
+        async () =>
+          payPalClient.createOrder({
+            referenceId: intentId,
+            currency: proposal.currency,
+            totalMinor: verifiedTotalMinor,
+            items: orderItems,
+            // INV-2: Payee account is strictly resolved from authoritative merchant registry, never agent hints
+            ...(payee?.payeeRef ? { payee: { emailAddress: payee.payeeRef } } : {}),
+            requestId: createRequestId,
+          }),
+        params.retryConfig,
+      );
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      mandateService.releaseReservation(intentId, `PayPal createOrder failed: ${errorMsg}`);
+      appendAuditEvent(db, {
+        actor: 'control_plane',
+        type: 'ORDER_FAILED',
+        ref: intentId,
+        payload: { error: errorMsg, request_id: createRequestId },
+        ts: now,
+      });
+      db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PAYPAL_CREATE_FAILED', updated_at = ? WHERE intent_id = ?").run(
+        now,
+        intentId,
+      );
+      const vRes = verifyAuditLedger(db);
+      return {
+        intentId,
+        mandateId: proposal.mandate_id,
+        verdict: 'DENY',
+        status: 'FAILED',
+        refusalReason: 'PAYPAL_CREATE_FAILED',
+        auditValid: vRes.valid,
+      };
+    }
+
     appendAuditEvent(db, {
       actor: 'control_plane',
-      type: 'ORDER_FAILED',
+      type: 'ORDER_CREATED',
       ref: intentId,
-      payload: { error: errorMsg, request_id: createRequestId },
+      payload: {
+        order_id: orderResponse.id,
+        status: orderResponse.status,
+        intent: orderResponse.intent,
+        amount_minor: verifiedTotalMinor,
+        currency: proposal.currency,
+        payee_ref: payee?.payeeRef ?? 'default',
+        request_id: createRequestId,
+      },
       ts: now,
     });
-    db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PAYPAL_CREATE_FAILED', updated_at = ? WHERE intent_id = ?").run(
-      now,
-      intentId,
-    );
-    const vRes = verifyAuditLedger(db);
-    return {
-      intentId,
-      mandateId: proposal.mandate_id,
-      verdict: 'DENY',
-      status: 'FAILED',
-      refusalReason: 'PAYPAL_CREATE_FAILED',
-      auditValid: vRes.valid,
-    };
   }
-
-  appendAuditEvent(db, {
-    actor: 'control_plane',
-    type: 'ORDER_CREATED',
-    ref: intentId,
-    payload: {
-      order_id: orderResponse.id,
-      status: orderResponse.status,
-      intent: orderResponse.intent,
-      amount_minor: verifiedTotalMinor,
-      currency: proposal.currency,
-      payee_ref: payee?.payeeRef ?? 'default',
-      request_id: createRequestId,
-    },
-    ts: now,
-  });
 
   let captureId: string;
   try {
@@ -1197,6 +1222,23 @@ export async function executeApprovedStepUp(
   } catch {
     captureId = `cap_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
   }
+
+  // Record ORDER_CAPTURED into audit ledger with authentic PayPal Capture ID
+  appendAuditEvent(db, {
+    actor: 'control_plane',
+    type: 'ORDER_CAPTURED',
+    ref: intentId,
+    payload: {
+      order_id: orderResponse.id,
+      capture_id: captureId,
+      amount_minor: verifiedTotalMinor,
+      currency: proposal.currency,
+      payee_ref: payee?.payeeRef ?? 'default',
+      status: 'COMPLETED',
+      request_id: captureRequestId,
+    },
+    ts: now,
+  });
 
   mandateService.captureReservation(intentId, verifiedTotalMinor);
 

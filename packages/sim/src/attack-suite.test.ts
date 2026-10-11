@@ -437,7 +437,7 @@ describe('MandatePay Complete Attack Suite (Harness A-01 to A-12, spec.md §6, �
   // --------------------------------------------------------------------------
   // A-11: Flood of STEP_UP-Sized Intents (spec.md §7) (INV-8)
   // --------------------------------------------------------------------------
-  it('A-11: Flood of STEP_UP intents to over-commit budget is capped by max_pending_approvals (INV-8)', () => {
+  it('A-11: Flood of STEP_UP intents & queue saturation is capped by max_pending_approvals (FR-27, INV-8)', () => {
     const queueCappedDecision = evaluateFullPolicy(
       baseMandate,
       {

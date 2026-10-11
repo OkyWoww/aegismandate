@@ -109,4 +109,5 @@ export function evaluatePolicy(context: PolicyEvaluationContext): PolicyDecision
 }
 
 export * from './mandate.js';
+export * from './engine.js';
 

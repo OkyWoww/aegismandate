@@ -147,6 +147,89 @@ export function minorUnitsToDecimal(minor: number): string {
   return isNegative ? `-${str}` : str;
 }
 
+/**
+ * Creates an in-memory high-fidelity mock fetch implementation for PayPal Sandbox Orders v2 API.
+ * Enables zero-external-dependency local testing, CI runs, and developer orchestration.
+ */
+export function createMockPayPalFetch(): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const urlStr = String(input);
+    // OAuth 2.0 Token
+    if (urlStr.includes('/v1/oauth2/token')) {
+      return new Response(
+        JSON.stringify({
+          access_token: 'sandbox_mock_token_' + Math.random().toString(36).substring(2, 10),
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Capture Order
+    if (urlStr.includes('/capture') && init?.method === 'POST') {
+      const captureId = `CAPTURE-SANDBOX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+      return new Response(
+        JSON.stringify({
+          id: captureId,
+          status: 'COMPLETED',
+          amount: { currency_code: 'USD', value: '9.00' },
+          links: [{ href: `https://api-m.sandbox.paypal.com/v2/payments/captures/${captureId}`, rel: 'self', method: 'GET' }],
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Create Order
+    if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+      let body: { intent?: string; purchase_units?: unknown[] } = {};
+      try {
+        body = JSON.parse(init?.body as string);
+      } catch {
+        // ignore
+      }
+      const orderId = `ORDER-SANDBOX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+      return new Response(
+        JSON.stringify({
+          id: orderId,
+          status: 'CREATED',
+          intent: body.intent || 'CAPTURE',
+          purchase_units: body.purchase_units || [],
+          links: [
+            { href: `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`, rel: 'approve', method: 'GET' },
+            { href: `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, rel: 'capture', method: 'POST' },
+          ],
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Get Order Details
+    if (urlStr.includes('/v2/checkout/orders/') && (!init || init.method === 'GET')) {
+      const parts = urlStr.split('/orders/');
+      const orderId = parts[1]?.split('?')[0] || 'ORDER-SANDBOX-MOCK';
+      return new Response(
+        JSON.stringify({
+          id: orderId,
+          status: 'COMPLETED',
+          intent: 'CAPTURE',
+          purchase_units: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Webhook verification
+    if (urlStr.includes('/v1/notifications/verify-webhook-signature')) {
+      return new Response(
+        JSON.stringify({ verification_status: 'SUCCESS' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    return new Response('Not Found', { status: 404 });
+  }) as typeof fetch;
+}
+
 export class PayPalClient {
   private readonly config: PayPalConfig;
   private accessToken: string | null = null;
@@ -158,7 +241,17 @@ export class PayPalClient {
       throw new Error('PayPalClient requires clientId and clientSecret.');
     }
     this.config = config;
-    this.fetchImpl = config.fetchFn ?? globalThis.fetch;
+    if (config.fetchFn) {
+      this.fetchImpl = config.fetchFn;
+    } else if (
+      process.env.PAYPAL_MOCK === 'true' ||
+      config.clientId.startsWith('sandbox_client_id_dev') ||
+      config.clientId === 'mock_paypal_client_id'
+    ) {
+      this.fetchImpl = createMockPayPalFetch();
+    } else {
+      this.fetchImpl = globalThis.fetch;
+    }
   }
 
   get baseUrl(): string {

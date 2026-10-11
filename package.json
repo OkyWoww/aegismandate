@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "tsx scripts/dev.ts",
+    "start:all": "tsx scripts/dev.ts",
+    "web:dev": "vite --port=3000 --host=0.0.0.0",
+    "api:dev": "tsx apps/api/src/index.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
@@ -12,6 +15,7 @@
     "lint": "eslint . --ext .ts,.tsx,.js,.cjs",
     "test": "vitest run",
     "attack-suite": "vitest run packages/sim",
+    "smoke": "tsx scripts/smoke.ts",
     "seed": "tsx scripts/seed.ts",
     "verify-fresh-clone": "bash scripts/verify-fresh-clone.sh"
   },

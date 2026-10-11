@@ -19,11 +19,11 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
         '/v1': {
-          target: 'http://localhost:8787',
+          target: 'http://localhost:3001',
           changeOrigin: true,
         },
         '/health': {
-          target: 'http://localhost:8787',
+          target: 'http://localhost:3001',
           changeOrigin: true,
         },
       },

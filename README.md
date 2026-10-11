@@ -120,7 +120,8 @@ mandatepay/
 | **T-013** | **Agent Integration Tests**| 🟢 COMPLETED | End-to-end shopping agent integration scenarios (1-4) & audit ledger (`Phase 3`) |
 | **T-014** | **Fastify HTTP API Server**| 🟢 COMPLETED | Complete REST control plane with CORS, human approval, audit verify, & webhooks (`Phase 3`) |
 | **T-015** | **Dashboard & Web UI**   | 🟢 COMPLETED | React 19 + Tailwind control plane dashboard, approvals queue, & live attack console (`Phase 3`) |
-| **T-016** | **Dispute Copilot & Deploy**| 🟡 READY     | Customer dispute evidence drafting copilot & Render deployment (`Phase 4`) |
+| **T-016** | **Local E2E Orchestration**| 🟢 COMPLETED | Single-command concurrent dev runner (`pnpm dev`) & automated ephemeral smoke test suite (`pnpm smoke`) |
+| **T-017** | **Dispute Copilot & Deploy**| 🟡 READY     | Customer dispute evidence drafting copilot & Render deployment (`Phase 4`) |
 
 ### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
 
@@ -173,7 +174,13 @@ pnpm test
 # 4. Execute the complete attack suite (A-01 through A-12)
 pnpm attack-suite
 
-# 5. One-click judge clone validation
+# 5. Run end-to-end ephemeral smoke verification suite
+pnpm smoke
+
+# 6. Launch full local development environment (API on :3001, Web UI on :3000)
+pnpm dev
+
+# 7. One-click judge clone validation
 bash scripts/verify-fresh-clone.sh
 ```
 

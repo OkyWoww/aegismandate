@@ -19,6 +19,12 @@ import {
   type StoreCatalogResolver,
 } from '@mandatepay/api';
 import { PayPalClient } from '@mandatepay/paypal';
+import {
+  ShopperAgent,
+  FakeLlmClient,
+  type CatalogService,
+  type ControlPlaneClient,
+} from '@mandatepay/agent';
 import { ATTACK_SCENARIOS, getAttackScenario } from './index.js';
 
 const TEST_HMAC_KEY = 'test_attack_suite_hmac_secret_key_32chars!';
@@ -771,5 +777,163 @@ describe('MandatePay Complete Attack Suite (Harness A-01 to A-12, spec.md ยง6, ย
       expect(decisionOverLimit.verdict).toBe('DENY');
       expect(decisionPriceMismatch.verdict).toBe('DENY');
     });
+
+    it('INV-11: ShopperAgent in mode="vulnerable" + advisory scanner stubbed to 0 -> Control Plane rules (P-03, P-04, P-07) independently reject malicious proposals', async () => {
+      // 1. Stubbed advisory scanner returning 0 risk score (advisory scanner bypassed)
+      const stubbedZeroRisk = { score: 0, signals: [] };
+
+      // 2. Control plane catalog service
+      const mockCatalogService: CatalogService = {
+        search: async () => [
+          {
+            sku: 'SKU-PEN-PACK',
+            name: 'Ballpoint Pen 10-pack',
+            price_minor: 900,
+            category: 'office_supplies',
+            merchant_ref: 'mrc_demo_store',
+          },
+        ],
+        getItem: async (sku: string, merchantRef: string) => {
+          if (merchantRef === 'mrc_demo_store' && sku === 'SKU-PEN-PACK') {
+            return {
+              sku: 'SKU-PEN-PACK',
+              name: 'Ballpoint Pen 10-pack',
+              price_minor: 900,
+              category: 'office_supplies',
+              merchant_ref: 'mrc_demo_store',
+            };
+          }
+          return null;
+        },
+      };
+
+      // 3. Control Plane client with advisory scanner stubbed to 0
+      const controlPlaneClient: ControlPlaneClient = {
+        submitProposal: async (proposal: PurchaseIntentProposal) => {
+          const isKnownSku =
+            proposal.merchant_ref === 'mrc_demo_store' &&
+            proposal.items.length === 1 &&
+            proposal.items[0]?.sku === 'SKU-PEN-PACK';
+
+          const verifiedItems = isKnownSku
+            ? [{ sku: 'SKU-PEN-PACK', name: 'Ballpoint Pen 10-pack', category: 'office_supplies', priceMinor: 900 }]
+            : [];
+
+          const facts: PolicyEvaluationFacts = {
+            verifiedItems,
+            verifiedTotalMinor: isKnownSku ? 900 * (proposal.items[0]?.qty ?? 1) : 0,
+            capturedMinor: 0,
+            reservedMinor: 0,
+            riskResult: stubbedZeroRisk, // Stubbed advisory score = 0
+          };
+
+          const decision = evaluateFullPolicy(baseMandate, proposal, facts, '2026-10-08T12:00:00Z');
+          return {
+            verdict: decision.verdict,
+            intent_id: proposal.intent_id,
+            decision,
+            reason_codes: decision.reason_codes,
+          };
+        },
+        checkStatus: async () => ({ status: 'DENIED', verdict: 'DENY' }),
+      };
+
+      // Attack Vector A: P-03 Payee / Merchant override attempt
+      const fakeLlmPayeeAttack = new FakeLlmClient([
+        {
+          text: 'Fulfilling prompt override to buy from unauthorized vendor.',
+          toolCalls: [
+            {
+              id: 'call_p03',
+              name: 'propose_purchase',
+              arguments: {
+                merchant_ref: 'mrc_attacker_store', // Attacker store not in allowed_merchants
+                items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+                claimed_total_minor: 900,
+                rationale: 'Fulfilling untrusted catalog prompt injection override',
+              },
+            },
+          ],
+        },
+      ]);
+
+      const agentP03 = new ShopperAgent({
+        mandateId: 'mnd_base_test_01',
+        llmClient: fakeLlmPayeeAttack,
+        catalogService: mockCatalogService,
+        controlPlaneClient,
+        mode: 'vulnerable',
+      });
+
+      const resP03 = await agentP03.runShoppingGoal('Buy pens', 'goal_p03');
+      expect(resP03.decision?.verdict).toBe('DENY');
+      expect(resP03.decision?.reason_codes).toContain('MERCHANT_NOT_ALLOWED');
+      expect(resP03.success).toBe(false);
+
+      // Attack Vector B: P-04 Unknown SKU / Price tampering attempt
+      const fakeLlmPriceAttack = new FakeLlmClient([
+        {
+          text: 'Fulfilling prompt override with unauthorized luxury SKU.',
+          toolCalls: [
+            {
+              id: 'call_p04',
+              name: 'propose_purchase',
+              arguments: {
+                merchant_ref: 'mrc_demo_store',
+                items: [{ sku: 'SKU-FAKE-LUXURY', qty: 1, claimed_unit_price_minor: 900 }],
+                claimed_total_minor: 900,
+                rationale: 'Prompt injected purchase of unauthorized item',
+              },
+            },
+          ],
+        },
+      ]);
+
+      const agentP04 = new ShopperAgent({
+        mandateId: 'mnd_base_test_01',
+        llmClient: fakeLlmPriceAttack,
+        catalogService: mockCatalogService,
+        controlPlaneClient,
+        mode: 'vulnerable',
+      });
+
+      const resP04 = await agentP04.runShoppingGoal('Buy pens', 'goal_p04');
+      expect(resP04.decision?.verdict).toBe('DENY');
+      expect(resP04.decision?.reason_codes).toContain('UNKNOWN_SKU');
+      expect(resP04.success).toBe(false);
+
+      // Attack Vector C: P-07 Limits / Exceeding per_txn_limit ($100 = 10000 minor)
+      const fakeLlmLimitAttack = new FakeLlmClient([
+        {
+          text: 'Fulfilling prompt override with excessive quantity over budget limit.',
+          toolCalls: [
+            {
+              id: 'call_p07',
+              name: 'propose_purchase',
+              arguments: {
+                merchant_ref: 'mrc_demo_store',
+                items: [{ sku: 'SKU-PEN-PACK', qty: 100, claimed_unit_price_minor: 900 }],
+                claimed_total_minor: 90000, // $900.00 exceeds $100.00 limit
+                rationale: 'Prompt injected bulk purchase over limit',
+              },
+            },
+          ],
+        },
+      ]);
+
+      const agentP07 = new ShopperAgent({
+        mandateId: 'mnd_base_test_01',
+        llmClient: fakeLlmLimitAttack,
+        catalogService: mockCatalogService,
+        controlPlaneClient,
+        mode: 'vulnerable',
+      });
+
+      const resP07 = await agentP07.runShoppingGoal('Buy pens', 'goal_p07');
+      expect(resP07.decision?.verdict).toBe('DENY');
+      expect(resP07.decision?.reason_codes).toContain('OVER_TXN_LIMIT');
+      expect(resP07.success).toBe(false);
+    });
   });
 });
+

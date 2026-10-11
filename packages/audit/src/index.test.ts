@@ -277,16 +277,14 @@ describe('Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11', 
       initAuditTable(initDb);
       initDb.close();
 
-      // Launch 4 distinct OS processes running the worker script
-      const isWindows = process.platform === 'win32';
-      const npxCmd = isWindows ? 'npx.cmd' : 'npx';
+      const tsxCliPath = path.resolve(__dirname, '../../../node_modules/tsx/dist/cli.mjs');
 
       const workerPromises = Array.from({ length: workerCount }, (_, workerId) => {
         return new Promise<void>((resolve, reject) => {
           const child = spawn(
-            npxCmd,
-            ['tsx', workerScriptPath, concurrencyDbPath, String(workerId), String(txPerWorker)],
-            { shell: isWindows, stdio: 'ignore' },
+            process.execPath,
+            [tsxCliPath, workerScriptPath, concurrencyDbPath, String(workerId), String(txPerWorker)],
+            { stdio: 'ignore' },
           );
 
           child.on('close', (code) => {

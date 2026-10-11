@@ -258,6 +258,9 @@ importers:
 
   packages/sim:
     dependencies:
+      '@mandatepay/agent':
+        specifier: workspace:*
+        version: link:../../apps/agent
       '@mandatepay/api':
         specifier: workspace:*
         version: link:../../apps/api

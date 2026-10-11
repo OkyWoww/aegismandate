@@ -22,6 +22,7 @@
     "@mandatepay/audit": "workspace:*",
     "@mandatepay/scanner": "workspace:*",
     "@mandatepay/paypal": "workspace:*",
+    "@mandatepay/agent": "workspace:*",
     "@mandatepay/api": "workspace:*"
   },
   "devDependencies": {

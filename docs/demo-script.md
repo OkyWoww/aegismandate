@@ -1,8 +1,8 @@
-# MandatePay Video Presentation & Hackathon Demo Script (≤ 3:00)
+# AegisMandate Video Presentation & Hackathon Demo Script (≤ 3:00)
 
 > **Format**: Split Screen Video  
 > - **Left Screen**: Terminal / Shopper Agent chat execution (`apps/agent`)  
-> - **Right Screen**: MandatePay Web Dashboard (`http://localhost:3000`)  
+> - **Right Screen**: AegisMandate Web Dashboard (`http://localhost:3000`)  
 > - **Corner Overlay**: PayPal Sandbox Account Activity Log  
 > **Total Target Duration**: 2 minutes 50 seconds (leaves a 10s buffer for video hosting)
 

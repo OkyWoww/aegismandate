@@ -213,7 +213,7 @@ describe('MandatePay Dashboard & Web UI (Task T-015, specs/design.md §9, demo.m
     it('renders complete dashboard without throwing', () => {
       const html = renderToString(<App />);
 
-      expect(html).toContain('MandatePay');
+      expect(html).toContain('AegisMandate');
       expect(html).toContain('PayPal AI Hackathon');
       expect(html).toContain('Agentic Commerce Containment &amp; Mandate Control');
       expect(html).toContain('Active Financial Mandate');

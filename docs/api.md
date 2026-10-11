@@ -1,10 +1,11 @@
-# MandatePay Control Plane REST API Reference
+# AegisMandate Control Plane REST API Reference
 
+> **Project**: AegisMandate *(formerly MandatePay)*  
 > **Base URL**: `http://localhost:3001` (or configured `PORT`)  
 > **Protocol**: HTTP/1.1 JSON  
 > **Specification**: `specs/spec.md §2`, `specs/tech.md §3, §4`
 
-MandatePay's Control Plane exposes a hardened REST API that handles purchase intent proposals, human step-up approvals, live mandate inspections, cryptographic audit ledger verification, and PayPal webhook processing.
+AegisMandate's Control Plane exposes a hardened REST API that handles purchase intent proposals, human step-up approvals, live mandate inspections, cryptographic audit ledger verification, and PayPal webhook processing.
 
 ---
 

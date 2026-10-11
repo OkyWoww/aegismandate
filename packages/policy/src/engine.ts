@@ -81,6 +81,19 @@ export function evaluateFullPolicy(
   };
 
   const addStepUp = (rule: string, code: string, detail?: string) => {
+    // FR-27: At most max_pending_approvals STEP_UP intents may be pending; further ones -> DENY APPROVAL_QUEUE_FULL
+    if (
+      mandate &&
+      facts.pendingApprovals !== undefined &&
+      facts.pendingApprovals >= mandate.max_pending_approvals
+    ) {
+      addDeny(
+        rule,
+        'APPROVAL_QUEUE_FULL',
+        `Pending approvals count ${facts.pendingApprovals} >= max_pending_approvals ${mandate.max_pending_approvals}`,
+      );
+      return;
+    }
     trace.push({ rule, result: 'step_up', detail });
     reasonCodes.push(code);
     if (state.verdict !== 'DENY') {

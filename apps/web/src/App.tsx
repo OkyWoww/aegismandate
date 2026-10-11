@@ -199,7 +199,7 @@ export function App() {
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <span className="font-extrabold text-lg tracking-tight text-white">MandatePay</span>
+              <span className="font-extrabold text-lg tracking-tight text-white">AegisMandate</span>
               <span className="ml-2 text-[10px] font-mono uppercase bg-blue-950 text-blue-400 border border-blue-800/80 px-2 py-0.5 rounded">
                 PayPal AI Hackathon
               </span>

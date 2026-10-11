@@ -1,7 +1,7 @@
 {
-  "name": "mandatepay",
+  "name": "aegismandate",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.9.0-rc1",
   "type": "module",
   "scripts": {
     "dev": "tsx scripts/dev.ts",
@@ -14,6 +14,7 @@
     "typecheck": "tsc -b",
     "lint": "eslint . --ext .ts,.tsx,.js,.cjs",
     "test": "vitest run",
+    "test:live-paypal": "tsx scripts/live-sandbox-test.ts",
     "attack-suite": "vitest run packages/sim",
     "smoke": "tsx scripts/smoke.ts",
     "seed": "tsx scripts/seed.ts",

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { AuditEvent } from '@mandatepay/schemas';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -256,6 +257,68 @@ describe('Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11', 
       }
 
       // Verify cryptographic chain across all 200 events
+      const chainVerification = verifyAuditLedger(verifyDb);
+      expect(chainVerification.valid).toBe(true);
+      expect(chainVerification.count).toBe(totalEvents);
+      expect(chainVerification.brokenAtSeq).toBeUndefined();
+
+      verifyDb.close();
+    });
+
+    it('processes true asynchronous parallel concurrency burst (≥ 200 events) across 5 separate connections using Promise.all under real contention', async () => {
+      const concurrencyDbPath = path.join(testDbDir, 'concurrency_race.db');
+      const connCount = 5;
+      const eventsPerConn = 40;
+      const totalEvents = connCount * eventsPerConn; // 200 events
+
+      const connections: DatabaseConnection[] = [];
+      for (let c = 0; c < connCount; c++) {
+        connections.push(openDb(concurrencyDbPath));
+      }
+
+      // Launch 200 concurrent promises across 5 distinct connections with random micro-delays
+      const tasks: Array<() => Promise<AuditEvent>> = [];
+      for (let c = 0; c < connCount; c++) {
+        for (let i = 0; i < eventsPerConn; i++) {
+          const workerConn = connections[c]!;
+          const workerId = c;
+          const taskId = i;
+          tasks.push(async () => {
+            // Yield to event loop to induce real SQLite lock contention
+            await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 8)));
+            return appendAuditEvent(workerConn, {
+              actor: 'control_plane',
+              type: 'RACE_BURST',
+              ref: `worker_${workerId}_task_${taskId}`,
+              payload: { workerId, taskId, ts: Date.now() },
+            });
+          });
+        }
+      }
+
+      // Execute all 200 writes concurrently
+      const appended = await Promise.all(tasks.map((t) => t()));
+      expect(appended).toHaveLength(totalEvents);
+
+      for (const conn of connections) {
+        conn.close();
+      }
+
+      // Verify final ledger with fresh connection
+      const verifyDb = openDb(concurrencyDbPath);
+      const rows = getAuditEvents(verifyDb, { limit: 300 });
+      expect(rows).toHaveLength(totalEvents);
+
+      // Verify unbroken sequence 1..200 with zero duplicates or gaps
+      const seqSet = new Set<number>();
+      for (const r of rows) {
+        seqSet.add(r.seq);
+      }
+      expect(seqSet.size).toBe(totalEvents);
+      for (let s = 1; s <= totalEvents; s++) {
+        expect(seqSet.has(s)).toBe(true);
+      }
+
       const chainVerification = verifyAuditLedger(verifyDb);
       expect(chainVerification.valid).toBe(true);
       expect(chainVerification.count).toBe(totalEvents);

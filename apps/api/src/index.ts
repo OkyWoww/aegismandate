@@ -2,10 +2,10 @@ import { evaluatePolicy } from '@mandatepay/policy';
 import { verifyLedgerIntegrity } from '@mandatepay/audit';
 import { scanAdvisoryText } from '@mandatepay/scanner';
 import { PayPalClient } from '@mandatepay/paypal';
-import type { Mandate, PurchaseIntent } from '@mandatepay/schemas';
+import type { Mandate, PurchaseIntent, PolicyDecision } from '@mandatepay/schemas';
 
 export interface ControlPlaneService {
-  evaluateIntent: (mandate: Mandate, intent: PurchaseIntent, currentSpend: number) => ReturnType<typeof evaluatePolicy>;
+  evaluateIntent: (mandate: Mandate, intent: PurchaseIntent, currentSpend: number) => PolicyDecision;
   scanPayload: (text: string) => ReturnType<typeof scanAdvisoryText>;
   verifyLedger: (events: Parameters<typeof verifyLedgerIntegrity>[0]) => ReturnType<typeof verifyLedgerIntegrity>;
   paypalClient: PayPalClient;

@@ -113,7 +113,8 @@ mandatepay/
 | **T-006** | **Demo Store & Catalog** | 🟢 COMPLETED | Deterministic merchants, categories, and relative-clock seed script |
 | **T-007** | **Golden Path End-to-End**| 🟢 COMPLETED | Scripted intent → policy → reservation → PayPal create/capture (20/20 reliability) |
 | **T-008** | **Executor Hardening**    | 🟢 COMPLETED | Idempotency keys, retries, polling fallback, payload-hash check, TOCTOU recheck |
-| **T-009** | **Full Policy Engine**    | 🟡 READY | Full policy engine P-00..P-12, pure function, precedence (`Phase 2`) |
+| **T-009** | **Full Policy Engine**    | 🟢 COMPLETED | Full policy engine P-00..P-12, pure function, precedence (`Phase 2`) |
+| **T-010** | **Deep Key Scan & Values**| 🟡 READY | Deep scan + strict schemas + prototype pollution + value constraints |
 
 ### 4.1 What Is Real vs. Simulated (Rule §3.4 Compliance)
 

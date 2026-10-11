@@ -1,17 +1,57 @@
-import type { Mandate, PurchaseIntent, PolicyDecision } from '@mandatepay/schemas';
+import type {
+  Mandate,
+  PurchaseIntent,
+  PolicyDecision,
+  PurchaseIntentProposal,
+  Decision,
+} from '@mandatepay/schemas';
+import {
+  evaluateFullPolicy,
+  type PolicyEvaluationFacts,
+  type EvaluatePolicyOptions,
+} from './engine.js';
 
 export interface PolicyEvaluationContext {
   mandate: Mandate;
   intent: PurchaseIntent;
   cumulativeSpendToDate: number;
-  evaluatedAt?: string;
+  evaluatedAt?: string | undefined;
 }
 
 /**
  * Pure, deterministic evaluation of a purchase intent against an active mandate.
- * Absolutely zero I/O or network requests.
+ * Overloaded for both:
+ * 1. Full 13-rule Policy Engine (spec.md §4, FR-8): evaluatePolicy(mandate, intent, facts, now, options)
+ * 2. Legacy context evaluation for early bootstrap tests: evaluatePolicy(context)
  */
-export function evaluatePolicy(context: PolicyEvaluationContext): PolicyDecision {
+export function evaluatePolicy(context: PolicyEvaluationContext): PolicyDecision;
+export function evaluatePolicy(
+  mandate: Mandate | null | undefined,
+  proposal: PurchaseIntentProposal,
+  facts: PolicyEvaluationFacts,
+  now: string,
+  options?: EvaluatePolicyOptions | undefined,
+): Decision;
+export function evaluatePolicy(
+  arg1: Mandate | null | undefined | PolicyEvaluationContext,
+  arg2?: PurchaseIntentProposal,
+  arg3?: PolicyEvaluationFacts,
+  arg4?: string,
+  arg5?: EvaluatePolicyOptions,
+): Decision | PolicyDecision {
+  if (arg1 && typeof arg1 === 'object' && 'intent' in arg1 && 'cumulativeSpendToDate' in arg1) {
+    return evaluateLegacyPolicy(arg1 as PolicyEvaluationContext);
+  }
+  return evaluateFullPolicy(
+    arg1 as Mandate | null | undefined,
+    arg2 as PurchaseIntentProposal,
+    arg3 as PolicyEvaluationFacts,
+    arg4 as string,
+    arg5,
+  );
+}
+
+function evaluateLegacyPolicy(context: PolicyEvaluationContext): PolicyDecision {
   const { mandate, intent, cumulativeSpendToDate } = context;
   const now = context.evaluatedAt ?? new Date().toISOString();
 
@@ -109,5 +149,12 @@ export function evaluatePolicy(context: PolicyEvaluationContext): PolicyDecision
 }
 
 export * from './mandate.js';
-export * from './engine.js';
-
+export {
+  evaluatePolicyRules,
+  evaluateFullPolicy,
+  POLICY_ENGINE_VERSION,
+  type VerifiedItemFact,
+  type PolicyEvaluationFacts,
+  type EvaluatePolicyOptions,
+  type EvaluatePolicyParams,
+} from './engine.js';

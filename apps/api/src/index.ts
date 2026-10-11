@@ -19,3 +19,6 @@ export function createControlPlane(payPalConfig: ConstructorParameters<typeof Pa
     paypalClient: new PayPalClient(payPalConfig),
   };
 }
+
+export * from './mandate-service.js';
+

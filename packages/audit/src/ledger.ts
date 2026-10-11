@@ -83,47 +83,54 @@ export function appendAuditEvent(
 ): AuditEvent {
   initAuditTable(db);
 
+  const insertEvent = (): AuditEvent => {
+    const lastRow = db
+      .prepare('SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1')
+      .get() as { seq: number; hash: string } | undefined;
+
+    const seq = lastRow ? Number(lastRow.seq) + 1 : 1;
+    const prev_hash = lastRow ? String(lastRow.hash) : GENESIS_HASH;
+    const ts = params.ts ?? new Date().toISOString();
+
+    const hash = computeEventHash(prev_hash, {
+      seq,
+      ts,
+      actor: params.actor,
+      type: params.type,
+      ref: params.ref,
+      payload: params.payload,
+    });
+
+    const serializedPayload = canonicalJson(params.payload);
+
+    db.prepare(`
+      INSERT INTO audit_events (seq, ts, actor, type, ref, payload, prev_hash, hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(seq, ts, params.actor, params.type, params.ref, serializedPayload, prev_hash, hash);
+
+    return {
+      seq,
+      ts,
+      actor: params.actor,
+      type: params.type,
+      ref: params.ref,
+      payload: params.payload,
+      prev_hash,
+      hash,
+    };
+  };
+
+  if (typeof db.isInTransaction === 'function' && db.isInTransaction()) {
+    return insertEvent();
+  }
+
   let attempt = 0;
   while (attempt < maxRetries) {
     try {
       db.exec('BEGIN IMMEDIATE');
-
-      const lastRow = db
-        .prepare('SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1')
-        .get() as { seq: number; hash: string } | undefined;
-
-      const seq = lastRow ? Number(lastRow.seq) + 1 : 1;
-      const prev_hash = lastRow ? String(lastRow.hash) : GENESIS_HASH;
-      const ts = params.ts ?? new Date().toISOString();
-
-      const hash = computeEventHash(prev_hash, {
-        seq,
-        ts,
-        actor: params.actor,
-        type: params.type,
-        ref: params.ref,
-        payload: params.payload,
-      });
-
-      const serializedPayload = canonicalJson(params.payload);
-
-      db.prepare(`
-        INSERT INTO audit_events (seq, ts, actor, type, ref, payload, prev_hash, hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(seq, ts, params.actor, params.type, params.ref, serializedPayload, prev_hash, hash);
-
+      const event = insertEvent();
       db.exec('COMMIT');
-
-      return {
-        seq,
-        ts,
-        actor: params.actor,
-        type: params.type,
-        ref: params.ref,
-        payload: params.payload,
-        prev_hash,
-        hash,
-      };
+      return event;
     } catch (err: unknown) {
       try {
         db.exec('ROLLBACK');

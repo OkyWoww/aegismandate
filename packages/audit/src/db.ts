@@ -13,6 +13,7 @@ export interface DatabaseConnection {
   prepare(sql: string): DatabasePreparedStatement;
   close(): void;
   isOpen(): boolean;
+  isInTransaction(): boolean;
 }
 
 /**
@@ -56,6 +57,7 @@ export function openDb(dbPath: string): DatabaseConnection {
         rawDb.close();
       },
       isOpen: () => opened && rawDb.open,
+      isInTransaction: () => Boolean(rawDb.inTransaction),
     };
   } catch {
     // Fall back to Node built-in node:sqlite (Node 22 LTS / 24 LTS)
@@ -63,9 +65,15 @@ export function openDb(dbPath: string): DatabaseConnection {
     const { DatabaseSync } = require('node:sqlite');
     const rawDb = new DatabaseSync(dbPath);
     let opened = true;
+    let inTx = false;
 
     dbInstance = {
-      exec: (sql: string) => rawDb.exec(sql),
+      exec: (sql: string) => {
+        const trimmed = sql.trim().toUpperCase();
+        if (trimmed.startsWith('BEGIN')) inTx = true;
+        if (trimmed.startsWith('COMMIT') || trimmed.startsWith('ROLLBACK')) inTx = false;
+        return rawDb.exec(sql);
+      },
       pragma: (pragmaStr: string) => {
         return rawDb.exec(`PRAGMA ${pragmaStr};`);
       },
@@ -82,6 +90,7 @@ export function openDb(dbPath: string): DatabaseConnection {
         rawDb.close();
       },
       isOpen: () => opened,
+      isInTransaction: () => inTx,
     };
   }
 

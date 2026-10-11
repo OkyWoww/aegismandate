@@ -107,3 +107,6 @@ export function evaluatePolicy(context: PolicyEvaluationContext): PolicyDecision
     evaluatedAt: now,
   };
 }
+
+export * from './mandate.js';
+

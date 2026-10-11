@@ -9,6 +9,7 @@ export default defineConfig({
       'packages/**/*.{test,spec}.ts',
       'apps/**/*.{test,spec}.ts',
       'tests/**/*.{test,spec}.ts',
+      'src/**/*.{test,spec}.ts',
     ],
     coverage: {
       reporter: ['text', 'json', 'html'],

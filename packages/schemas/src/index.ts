@@ -372,3 +372,30 @@ export const PolicyDecisionSchema = z.object({
   evaluatedAt: z.string().datetime(),
 });
 export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
+
+export * from './canonical.js';
+
+// ==============================================================================
+// 5. RESERVATIONS & SPEND ACCOUNTING TYPES (FR-26)
+// ==============================================================================
+
+export const ReservationStateSchema = z.enum(['HELD', 'CAPTURED', 'RELEASED']);
+export type ReservationState = z.infer<typeof ReservationStateSchema>;
+
+export interface MandateSpend {
+  mandate_id: string;
+  captured_minor: number;
+  reserved_minor: number;
+  updated_at: string;
+}
+
+export interface MandateReservation {
+  id: string;
+  mandate_id: string;
+  intent_id: string;
+  amount_minor: number;
+  state: ReservationState;
+  created_at: string;
+  updated_at: string;
+}
+

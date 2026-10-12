@@ -16,7 +16,7 @@ Keywords MUST / SHOULD / MAY follow RFC 2119. All money is **integer minor units
 
 ### Mandates
 - **FR-1** The user MUST be able to create a mandate with the fields in §3.1.
-- **FR-2** A mandate MUST be `DRAFT` until the user links a PayPal sandbox wallet/approval, then `ACTIVE`.
+- **FR-2** A mandate MUST be `DRAFT` until the owner activates it in the dashboard, then `ACTIVE`. Under Plan B no payment instrument is stored; an optional `payer_binding` may pin the expected PayPal payer id.
 - **FR-3** A mandate MUST expire automatically at `valid_until` (TTL) → `EXPIRED`.
 - **FR-4** The user MUST be able to revoke a mandate at any time → `REVOKED`; revocation takes effect for all in-flight, not-yet-executed intents.
 - **FR-5** Mandate limits MUST be changeable **only** through the authenticated user dashboard, never via any agent-reachable API or tool.
@@ -30,7 +30,7 @@ Keywords MUST / SHOULD / MAY follow RFC 2119. All money is **integer minor units
 - **FR-11** Decision precedence: `DENY` > `STEP_UP` > `ALLOW`.
 
 ### Execution
-- **FR-12** Only the executor inside the control plane MAY call PayPal. It MUST execute only intents with a stored `ALLOW` decision or an approved `STEP_UP`.
+- **FR-12** Only the executor inside the control plane MAY call PayPal. It MUST create an order only for intents with a stored `ALLOW` decision or an owner-confirmed `STEP_UP`, and MUST capture only after payer approval is verified (FR-33, FR-35).
 - **FR-13** The payee MUST be resolved from the user-configured Merchant Registry; prices MUST be re-verified server-side (P-03, P-04).
 - **FR-14** PayPal calls MUST send an idempotency key (`PayPal-Request-Id` = deterministic from `intent_id` + step).
 - **FR-15** Payment truth MUST come from PayPal (order/capture status, verified webhooks), not from agent claims.
@@ -64,6 +64,14 @@ Keywords MUST / SHOULD / MAY follow RFC 2119. All money is **integer minor units
 - **FR-31 Agent token scope.** An agent token is bound to exactly one `mandate_id` and one `agent_id`; `POST /v1/intents` is rate-limited (default 10/min/agent) → `429`.
 - **FR-32 Webhook replay protection (SHOULD).** Besides signature verification and event-id dedupe, reject events whose transmission time is older than 5 minutes (**VERIFY** header name in T-002).
 
+### Payer-approval lifecycle (Plan B)
+- **FR-33 Payer-approval lifecycle.** For ALLOW (and owner-confirmed STEP_UP) the executor creates the order from server-derived payee and verified amount with `reference_id = intent_id`; the intent becomes `AWAITING_PAYER_APPROVAL` and the response carries `approve_url`. Capture happens only after payer approval is verified (webhook `CHECKOUT.ORDER.APPROVED`, or polling `GET order` until `APPROVED`).
+- **FR-34 Approval TTL and reservation release.** After `payer_approval_timeout_seconds` an unapproved intent becomes `EXPIRED`, its reservation is released, and an audit event is written (expiry sweeper plus lazy check on every intent/approve call). Capture MUST be refused unless the reservation is `HELD` and the intent is not expired. Before calling PayPal, the capture path atomically flips the intent to `CAPTURING` inside a `BEGIN IMMEDIATE` transaction so the sweeper cannot release a reservation that is mid-capture.
+- **FR-35 Pre-capture preflight.** Immediately before capture the executor `GET`s the order and asserts: status `APPROVED`; `reference_id == intent_id`; amount and currency equal the verified total; payee (merchant id **and** email) equals the registry; and, if `payer_binding.payer_id` is set, the payer id matches. Any failure → no capture, reservation released, audit event.
+- **FR-36 Authoritative order id.** Approve/capture paths MUST use only the order id stored server-side; request bodies MUST NOT accept or carry an order id.
+- **FR-37 Idempotent capture and reconciliation.** Capture uses a deterministic `PayPal-Request-Id` per intent. On `ORDER_ALREADY_CAPTURED` the executor `GET`s the order, verifies the capture belongs to this intent, records the capture and an audit event if missing, then returns the recorded state. On startup, intents in `CAPTURING` are reconciled against PayPal (crash-after-capture recovery).
+- **FR-38 Owner-confirmation semantics.** STEP_UP withholds order creation and `approve_url` until the owner confirms the specific `payload_hash` (FR-28). Two human gates (dashboard, then PayPal) apply only to flagged intents.
+
 ## 3. Data contracts
 
 ### 3.1 Mandate (JSON)
@@ -89,7 +97,8 @@ Keywords MUST / SHOULD / MAY follow RFC 2119. All money is **integer minor units
   "suspend_after_denies": 5,
   "step_up": { "channel": "dashboard", "timeout_seconds": 300 },
   "risk": { "step_up_threshold": 40, "deny_threshold": 75 },
-  "wallet": { "type": "paypal_vault", "ref": "pt_..." },
+  "payer_approval_timeout_seconds": 900,
+  "payer_binding": { "payer_id": null },
   "created_at": "2026-10-20T00:00:00Z",
   "signature": "hmac-sha256:..."
 }
@@ -148,7 +157,7 @@ Rules:
 ### 3.4 State machines
 
 - **Mandate:** `DRAFT → ACTIVE → (EXPIRED | REVOKED)`; `ACTIVE ↔ SUSPENDED` (FR-30; only the user can resume); EXPIRED/REVOKED are final.
-- **Intent:** `RECEIVED → DECIDED(ALLOW|STEP_UP|DENY)`; `ALLOW → ORDER_CREATED → CAPTURED | FAILED`; `STEP_UP → APPROVED → ORDER_CREATED… | REJECTED | TIMED_OUT`. Entering `DENIED`, `REJECTED`, `TIMED_OUT`, `FAILED`, or a voided order **releases the reservation** (FR-26).
+- **Intent:** `RECEIVED → DECIDED(ALLOW|STEP_UP|DENY)`; `ALLOW → ORDER_CREATED → AWAITING_PAYER_APPROVAL → PAYER_APPROVED → CAPTURING → CAPTURED`, or `→ EXPIRED | FAILED` at any step after `ORDER_CREATED`; `STEP_UP → OWNER_CONFIRMED → ORDER_CREATED → …` (same tail) or `→ REJECTED | TIMED_OUT`. Entering `DENIED`, `REJECTED`, `TIMED_OUT`, `FAILED`, or a voided order **releases the reservation** (FR-26).
 
 ### 3.5 Audit event
 
@@ -182,9 +191,9 @@ Rules:
 |---------------|--------|---------|
 | `POST /v1/mandates` · `GET /v1/mandates/:id` | user | create / read |
 | `POST /v1/mandates/:id/activate` · `/revoke` | user | lifecycle |
-| `POST /v1/intents` | agent (agent token) | submit proposal → Decision |
+| `POST /v1/intents` (implementation: `POST /v1/intents/propose`) | agent (agent token) | submit proposal → Decision (+ `approve_url` once an order exists) |
 | `GET /v1/intents/:id` | agent, user | status |
-| `GET /v1/approvals` · `POST /v1/approvals/:id/approve` · `/reject` | user | step-up queue |
+| `GET /v1/approvals` · `POST /v1/approvals/:id/approve` · `/reject` (implementation: `POST /v1/intents/:id/approve`; owner-authenticated; **body carries no order id**) | user | owner-confirmation queue |
 | `POST /v1/webhooks/paypal` | PayPal | verified events (signature check mandatory) |
 | `GET /v1/audit` · `GET /v1/audit/verify` | user | explorer / chain check |
 | `GET /v1/disputes` · `POST /v1/disputes/:id/draft` · `/submit` | user | S1 |
@@ -200,17 +209,21 @@ Rules:
 
 ## 7. Acceptance criteria (Given/When/Then)
 
-- **AC-1 Happy path.** Given an ACTIVE mandate and an in-limit intent for an allowed merchant, when submitted, then verdict=ALLOW, a PayPal sandbox order is created and captured, intent→`CAPTURED`, audit shows ≥5 linked events.
-- **AC-2 Step-up.** Given `auto_approve_limit < verified_total ≤ per_txn_limit`, then verdict=STEP_UP, no PayPal order exists until approval; approval executes once; rejection or timeout ends in no order.
+- **AC-1 Happy path (Plan B).** Given an ACTIVE mandate and an in-limit intent for an allowed merchant, when submitted, then verdict=ALLOW, a PayPal sandbox order is created and an `approve_url` is returned (intent `AWAITING_PAYER_APPROVAL`); after the sandbox buyer approves, preflight passes, the order is captured, intent→`CAPTURED`, and the audit log shows ≥6 linked events including the real PayPal capture id.
+- **AC-2 Step-up.** Given `auto_approve_limit < verified_total ≤ per_txn_limit`, then verdict=STEP_UP, no PayPal order and no `approve_url` exist until owner confirmation; confirmation creates the order and issues the link once; rejection or timeout ends with no order.
 - **AC-3 Idempotency.** Submitting the same `intent_id` twice yields identical decisions and exactly one PayPal order.
 - **AC-4 Revocation.** Revoking a mandate while an intent awaits approval makes approval fail with `MANDATE_REVOKED`.
 - **AC-5 Audit integrity.** After any run `verify` passes; after manually altering one row, `verify` reports that row's `seq`.
-- **AC-6 Webhook authenticity.** A webhook with an invalid signature is rejected (400 INVALID_WEBHOOK_SIGNATURE) and audit-logged; state does not change.
+- **AC-6 Webhook authenticity.** A webhook with an invalid signature is rejected (HTTP 400 `INVALID_WEBHOOK_SIGNATURE`; implementation decision, §9) and audit-logged; state does not change.
 - **AC-7 No credentials in agent.** Static check: the agent package imports no PayPal client and its environment contains no PayPal secrets.
 - **AC-8 Reservation integrity.** Given budget B, when N concurrent intents are submitted whose sum exceeds B, then `captured + reserved ≤ B` at all times (concurrency test), and releasing a rejected/timed-out step-up frees exactly its reservation.
 - **AC-9 Approval binding.** Mutating any field of the stored payload after approval (price, qty, merchant) causes the executor to refuse (`PAYLOAD_HASH_MISMATCH`); no order is created.
 - **AC-10 Execution-time recheck.** Revoking the mandate, expiring it, or changing the demo-store price between decision and execution results in no order.
-- **AC-11 Audit under concurrency.** After a concurrent burst of ≥ 200 events, `verify` passes and `seq` has no gaps or forks.
+- **AC-11 Audit under concurrency.** After a concurrent burst of ≥ 200 events (multiple OS processes on the same SQLite file), `verify` passes and `seq` has no gaps or forks.
+- **AC-12 Approval expiry.** An order left unapproved past the timeout → intent `EXPIRED`, reservation released, budget freed; if the payer approves afterwards, capture is refused (zero `captureOrder` calls).
+- **AC-13 Order substitution.** A request supplying a foreign order id is ignored (server-stored id used); a PayPal order whose payee, amount, currency, or `reference_id` differs fails preflight with no capture.
+- **AC-14 Idempotent capture.** Double-approve and crash-after-capture each result in exactly one capture and a reconciled, audited state.
+- **AC-15 Live proof.** `pnpm e2e:live` yields a real PayPal capture id that appears in the audit log; mock runs print `MOCK` and are excluded from evidence.
 
 ### Attack suite (all MUST be blocked **before any PayPal call**)
 
@@ -245,5 +258,7 @@ Rules:
 |------|----------|------------|
 | 2026-10-07 | Does a pending STEP_UP consume budget? | Yes — reserved at decision time, released on reject/timeout/fail (FR-26). |
 | 2026-10-07 | Can an agent-supplied nested value smuggle a payee? | Blocked by deep key scan + value constraints + payee-from-registry (P-03, A-12). |
-| 2026-10-11 | Webhook rejection HTTP status code? | Aligned to HTTP 400 Bad Request (`INVALID_WEBHOOK_SIGNATURE`) per standard webhook ingest conventions. Invariant holds: state does not change and incident is recorded in audit ledger (AC-6, INV-10). |
-| 2026-10-11 | Order Substitution Prevention? | Stripped client-supplied `paypal_order_id` from request schemas; executor strictly reads `row.order_id` from database and performs strict PayPal pre-flight validation (`status === 'APPROVED'`, totals/currency match, reference_id matches intent, payee matches server registry). |
+| 2026-10-11 | Vault / off-session authorization? | Not pursued. **Plan B locked**: the payer approves every order on PayPal (FR-33). |
+| 2026-10-11 | Does ALLOW still capture automatically? | No. Capture follows verified payer approval, expiry check, and preflight (FR-33–35). |
+| 2026-10-11 | Webhook rejection status code? | HTTP 400 `INVALID_WEBHOOK_SIGNATURE` (implementation decision; AC-6 updated). |
+| 2026-10-11 | Endpoint paths? | Implementation uses `POST /v1/intents/propose` and `POST /v1/intents/:id/approve`; the implementation is authoritative for paths. |

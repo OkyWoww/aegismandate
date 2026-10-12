@@ -12,12 +12,14 @@ If any other file conflicts with this one, **this file wins**. A rule may be cha
 | INV-4 | Mandate limits change **only** via authenticated user UI; no agent-reachable path exists. | A-10, route review |
 | INV-5 | The policy engine is a pure function: no I/O, no LLM, no wall clock. | design §6, property tests |
 | INV-6 | Fail closed: errors, unknown states, and timeouts end in DENY / no order. | NFR-2, tests |
-| INV-7 | No PayPal order is created without a stored ALLOW or an approved STEP_UP **and** a passing execution-time recheck. | FR-12, FR-29, AC-10 |
+| INV-7 | No PayPal order is created without a stored ALLOW or an owner-confirmed STEP_UP **and** a passing execution-time recheck; no capture without verified payer approval, a HELD reservation, and a passing preflight. | FR-12, FR-29, FR-33–35, AC-10, AC-12, AC-13 |
 | INV-8 | `captured + reserved ≤ total_budget` at all times, including under concurrency. | FR-26, AC-8 |
 | INV-9 | Every state change and PayPal interaction is in the hash-chained audit log, written in the same transaction. | FR-21, AC-5, AC-11 |
-| INV-10 | Webhooks are trusted only after PayPal signature verification; invalid → 401, no state change. | AC-6, A-09 |
+| INV-10 | Webhooks are trusted only after PayPal signature verification; invalid → 400 `INVALID_WEBHOOK_SIGNATURE`, no state change. | AC-6, A-09 |
 | INV-11 | The injection scanner is advisory; no attack class may depend on it alone. | spec §6 |
 | INV-12 | The control plane refuses to start unless `PAYPAL_ENV=sandbox`. | NFR-7 |
+| INV-13 | Order ids used for approve/capture come only from server-side state, never from request bodies. | FR-36, AC-13 |
+| INV-14 | Capture is idempotent and reconciled against PayPal; at most one capture per intent. | FR-37, AC-14 |
 
 ## 2. Engineering rules
 
@@ -38,7 +40,9 @@ If any other file conflicts with this one, **this file wins**. A rule may be cha
 2. **Scope discipline:** COULD → SHOULD → MUST cut order (`product.md §6`). After **5 Nov 2026 feature freeze**, only bug fixes, docs, and submission work.
 3. **No silent weakening:** relaxing any INV or rule requires an entry in `spec.md §9` explaining why.
 4. **Honesty in claims:** README, video, and Devpost text may not claim detection is complete, claim real-money capability, or imply features that are mocked. A "What is real vs. simulated" section is mandatory.
-5. **Timeboxed spikes:** PayPal Vault spike ≤ 4 working hours; decision gate 9 Oct 2026.
+5. **Spike closed:** the Vault/off-session spike ended; Plan B locked on 11 Oct 2026 (`tech.md §4.4`).
+6. **Live vs mock evidence:** only runs against the real sandbox count as proof of PayPal behavior; mock runs must print `MOCK` and are never cited as live proof. A smoke test that stops before capture must not be named or described as capturing.
+7. **No secrets in evidence:** tokens (even partial) never appear in logs, walkthroughs, or screenshots.
 
 ## 4. Hackathon compliance rules (from the official rules — re-read before submitting)
 
@@ -58,7 +62,8 @@ If any other file conflicts with this one, **this file wins**. A rule may be cha
 - [ ] `pnpm verify-fresh-clone` passes on a clean machine/container; output archived.
 - [ ] `pnpm typecheck && pnpm lint && pnpm test && pnpm attack-suite && pnpm test:concurrency` all green; outputs archived.
 - [ ] Attack suite shows 12/12 blocked before any PayPal call.
-- [ ] ≥ 3 legit scenarios complete end-to-end in the PayPal sandbox, 20 consecutive runs without failure.
+- [ ] ≥ 3 legit scenarios complete end-to-end in the PayPal sandbox (buyer approval scripted via `pnpm e2e:live`), 20 consecutive runs without failure, each with a real capture id in the audit log.
+- [ ] Sandbox buyer credentials are given to judges in the Devpost testing instructions and the README explains the approval step.
 - [ ] README "run in < 10 minutes" verified by following it literally.
 - [ ] LICENSE (MIT) present; no secrets in git history (`git log -p | grep` scan or a secret scanner).
 - [ ] Video ≤ 3:00, English narration or captions, no copyrighted music, uploaded and playable while logged out.

@@ -6,7 +6,7 @@ This file is written **before** feature work so that failure modes shape the des
 
 Hackathon winners are visible; the many that fail the same way are not. Common failure patterns for "AI agent + payments" entries:
 
-| Failure pattern seen in similar projects | Why it happens | MandatePay response |
+| Failure pattern seen in similar projects | Why it happens | AegisMandate response |
 |------------------------------------------|----------------|---------------------|
 | Payment API used as a decorative button (fails "PayPal is core") | Integration done last, shallow | Real Orders + capture + webhooks are the **golden path (T-007)** built first |
 | Demo works only on the author's laptop | Hidden env state, secrets, seed data | `verify-fresh-clone`, deterministic seeds, sandbox creds via Devpost field |
@@ -26,11 +26,13 @@ Ask "where would the plane have to be hit to not come home?" The answer for this
 | # | Weak point | Why fatal | Reinforcement (do first) |
 |---|-----------|-----------|--------------------------|
 | SPOF-1 | **A real, repeatable end-to-end PayPal sandbox payment** | Without it: fails Stage 1 ("PayPal core") and technical score | T-002 spike + T-007 golden path before any other feature; 20/20 reliability gate |
-| SPOF-2 | **Vault/off-session authorization unavailable in sandbox** | Breaks the "agentic" autonomy claim | Plan B pre-approved; 4h timebox; honest framing |
+| SPOF-2 | **Autonomy claim vs. Plan B reality** | Claiming "the agent pays" would be false and costs credibility | Plan B locked (11 Oct); narrative = agent proposes, policy contains, payer approves on PayPal; stated in README |
 | SPOF-3 | **Policy engine correctness** (a bypass makes the whole thesis false) | The product *is* the engine | Pure function; property tests; execution-time recheck; reservation accounting; attack suite |
 | SPOF-4 | **Judge cannot run it** | Unrunnable = unscored | Fresh-clone verification; hosted URL (S2); < 10-minute README |
 | SPOF-5 | **Single builder, single machine** | Illness/hardware failure in the last week | Push to remote daily; CI; scripts reproduce environment; freeze 5 Nov; 2-day buffer |
 | SPOF-6 | **Webhooks unreachable in local runs** | State never reconciles; demo hangs | Polling fallback is mandatory, not optional |
+| SPOF-7 | **Approval-expiry race and abandoned orders** | Over-committed budget (capture after release) or denial-of-budget by abandoned orders | FR-34 atomic `CAPTURING` flip, sweeper skips in-flight, AC-12 test |
+| SPOF-8 | **Order/payer substitution at capture time** | Capturing the wrong order or a mismatched payee/amount | FR-35 preflight, FR-36 server-side order id only, AC-13 test |
 
 ## 3. Inversion / pre-mortem — "It is 13 Nov and we lost badly. Why?"
 
@@ -46,6 +48,10 @@ Ask "where would the plane have to be hit to not come home?" The answer for this
 | Idea judged "just a wrapper" | Medium | Moderate | Visible depth: reservations, hash-chained audit, dispute loop, attack metrics | Feedback from dry-run viewers |
 | LLM provider outage/rate limit during demo or judging | Low–Med | Moderate | `FakeLlm` deterministic path; recorded video | API errors in dev |
 | Plan B demo feels less "agentic" | Medium | Moderate | Narrate honestly; emphasize gating, audit, and containment (the actual novelty) | n/a |
+| Judge cannot complete the PayPal approval step (no buyer credentials, login friction) | Medium | Severe | Sandbox buyer credentials in Devpost testing instructions; README approval walkthrough; recorded video as evidence | Fresh-clone test cannot finish approval |
+| Capture attempted after reservation release (budget over-commit) | Low–Med | Severe | FR-34, AC-12, concurrency tests | Any capture with intent not in `CAPTURING` |
+| Docs or smoke output claim a capture that was never real | Medium | Severe (credibility) | Rule §3.6 live-vs-mock labeling; smoke stops at `AWAITING_PAYER_APPROVAL` | Evidence without a real capture id |
+| Payer rubber-stamps approvals (approval fatigue) | Medium | Moderate | Policy filters what reaches the approval page; STEP_UP for flagged items; honest framing | n/a |
 | Chasing multiple sponsor prizes dilutes the core product | Medium | Moderate | One sponsor target only (`product.md §10`); sponsor work must not touch the golden path | Sponsor task scheduled before a MUST is green |
 | Burnout / overlapping commitments in the same weeks | Medium | Severe | Tier cut order; capacity note; no work planned in buffer days | Two consecutive missed daily goals |
 
@@ -57,13 +63,14 @@ Ask "where would the plane have to be hit to not come home?" The answer for this
 | Sandbox ≠ production (fraud systems, limits, vaulting behavior) | Accepted | "Real vs. simulated" section |
 | SQLite single-writer limits horizontal scale | Accepted | Out of scope for hackathon; noted as future work |
 | Demo store is ours, not a real merchant ecosystem | Accepted | Stated plainly; adapter interface shows how real merchants plug in |
+| **Authorized-but-unwanted purchases:** an injected agent can propose allowed SKUs from allowed merchants within budget | Accepted (bounded) | README + risk: loss ≤ `min(per_txn_limit, remaining_budget)` per order and ≤ `total_budget` per mandate, and the payer still approves; optional STEP_UP for first-time SKUs |
 
 ## 5. Assumptions to verify (blocking the plan if wrong)
 
 | Assumption | Verified in | Owner | Fallback |
 |------------|-------------|-------|----------|
 | Orders create/capture works with sandbox merchant payee | T-002 | builder | None — must work |
-| Vault v3 off-session capture in sandbox | T-002 (≤4h) | builder | Plan B |
+| Vault v3 off-session capture | Not pursued (Plan B locked 11 Oct) | — | Future work |
 | Webhook verification with sandbox webhook id | T-002 | builder | Polling-only, documented |
 | Sandbox dispute creation/fetch | T-002 / T-021 | builder | Seed dispute through the sandbox resolution center; else demo module on recorded real payload and label it |
 | PayPal Agent Toolkit availability/package details | T-023 | builder | Skip (COULD) |
@@ -81,3 +88,16 @@ Ask "where would the plane have to be hit to not come home?" The answer for this
 | "Ready for implementation" | Premature | Not ready until T-002 results and Phase 0 gate are in; spec now marks open VERIFY items |
 
 Additional hardening added independently: execution-time recheck (TOCTOU), approval payload-hash binding, agent-token scoping and rate limit, circuit breaker, webhook replay window, sandbox lock.
+
+## 7. Later review rounds (11 Oct 2026)
+
+| Finding | Status | Where tracked |
+|---------|--------|---------------|
+| Mock-looking PayPal IDs / no real sandbox evidence | Addressed: live create/get verified; standalone capture verified | tech §4.3 |
+| Capture inside the application not yet proven live | **Open** | T-029, AC-15 |
+| Concurrency test was single-process | Addressed: multi-process, 200 events | AC-11 |
+| Defense-in-depth with scanner stubbed to 0 | Addressed for P-03/P-04/P-07; extend to injected-agent end-to-end | A-01, A-08 |
+| Order substitution at approve/capture | Addressed in code (server-side order id, preflight); keep regression tests | AC-13 |
+| Approval expiry, reservation release, idempotent capture, spy-test non-vacuity | **Open** (specified) | FR-34, FR-37, AC-12, AC-14 |
+| Payer-id binding, merchant-id check, STEP_UP-for-new-SKU | Open (SHOULD) | FR-35, residual-risk row |
+| Over-claiming ("mathematical/cryptographic bound", "eliminates residual risk") | Addressed: honest framing required | product §11 |

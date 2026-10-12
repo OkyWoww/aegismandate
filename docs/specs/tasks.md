@@ -5,14 +5,14 @@ Every task's DoD is evidence per `skill.md §3`: real diff + real command output
 
 ## Critical path (a slip in any item moves the finish line)
 
-`T-001 → T-002 (gate 9 Oct) → T-005 → T-006 → T-007 → T-010 → T-012 → T-015 → T-020 → T-022 → T-024`
+`T-001 → T-002 (done: Plan B) → T-005 → T-006 → T-007 → T-008 → T-029 → T-010 → T-012 → T-015 → T-020 → T-022 → T-024`
 
 ## Phase 0 — Foundations (7–9 Oct)
 
 | ID | Task | Tier | Depends | Spec refs | DoD evidence |
 |----|------|------|---------|-----------|--------------|
 | T-001 | Repo bootstrap: pnpm workspaces, TS strict, ESLint/Prettier, Vitest, CI, MIT LICENSE, `.env.example`, specs in `docs/specs/`; `no-restricted-imports` (agent ↛ paypal) | MUST | — | rule §2, tech §2 | `pnpm typecheck`, `pnpm lint`, `pnpm test` outputs; CI run URL; lint failing on a deliberate bad import (screenshot/log) |
-| T-002 | **PayPal sandbox spike (hard timebox; use the APIMatic Context Plugin if access is confirmed, to check endpoint/field details):** OAuth, create+capture an order to a sandbox merchant, webhook signature verify, Vault v3 attempt (≤4h), disputes fetch check; fill `tech.md §4.3`; **decide Plan A/B by end of 9 Oct** | MUST | T-001 | FR-12–15, tech §4 | Request/response logs with real sandbox order+capture IDs (secrets redacted); updated §4.3 table; written Plan A/B decision |
+| T-002 | **PayPal sandbox spike (hard timebox; use the APIMatic Context Plugin if access is confirmed, to check endpoint/field details):** OAuth, create+capture an order to a sandbox merchant, webhook signature verify, Vault v3 attempt (≤4h), disputes fetch check; fill `tech.md §4.3`; **Plan B locked (decision recorded 11 Oct; Vault not pursued, see `tech.md §4.4`)** | MUST | T-001 | FR-12–15, tech §4 | Request/response logs with real sandbox order+capture IDs (secrets redacted); updated §4.3 table; written Plan A/B decision |
 | T-003 | Shared schemas (Zod): Mandate, Intent, Decision, Audit event; JSON examples from spec as fixtures | MUST | T-001 | spec §3 | Test run validating all spec examples; negative fixtures rejected |
 
 ## Phase 1 — Golden path (10–16 Oct)
@@ -22,8 +22,9 @@ Every task's DoD is evidence per `skill.md §3`: real diff + real command output
 | T-004 | Audit ledger package: canonical JSON, hash chain, `BEGIN IMMEDIATE` writer, verify; DB opened via `openDb` (WAL, `busy_timeout=5000`) | MUST | T-003 | FR-21/22, AC-5, AC-11, tech §1.1 | Unit tests; tamper test output showing broken `seq`; ≥200-event burst across **multiple connections** passing with zero `SQLITE_BUSY` errors |
 | T-005 | Mandate service: create/activate/revoke/expire/suspend, HMAC signature, `mandate_spend` + `reservations` tables | MUST | T-003, T-004 | FR-1–6, FR-26 | Tests for lifecycle + signature tamper rejection |
 | T-006 | Demo store + merchant registry + deterministic catalog + seed script (relative clock) | MUST | T-003 | FR-13, NFR-5/6 | `pnpm seed` output; catalog API responses |
-| T-007 | **Golden path end-to-end (no LLM):** scripted intent → minimal policy (P-00, P-03, P-04, P-07) → reservation → real PayPal sandbox create+capture → audit | MUST | T-002, T-005, T-006 | AC-1, FR-12–15 | Real order+capture IDs in log; audit verify PASS; 20 consecutive runs 20/20 |
-| T-008 | Executor hardening: idempotency keys, retries, polling fallback, execution-time recheck, payload-hash check | MUST | T-007 | FR-14, FR-28, FR-29, AC-3, AC-9, AC-10 | Tests incl. forced PayPal 5xx + duplicate submit → one order |
+| T-007 | **Golden path end-to-end (no LLM):** scripted intent → minimal policy (P-00, P-03, P-04, P-07) → reservation → real PayPal sandbox create order → `AWAITING_PAYER_APPROVAL` + `approve_url` → sandbox buyer approves → preflight → real capture → audit | MUST | T-002, T-005, T-006 | AC-1, FR-12–15 | Real order+capture IDs in log (buyer approval scripted via Playwright, `pnpm e2e:live`); audit verify PASS; 20 consecutive runs 20/20 |
+| T-008 | Executor hardening: idempotency keys, retries, polling fallback, execution-time recheck, payload-hash check, **approval-expiry sweeper + reservation release, pre-capture preflight (status/amount/currency/reference_id/payee), server-side order id only, idempotent `ORDER_ALREADY_CAPTURED` reconcile** | MUST | T-007 | FR-14, FR-28, FR-29, AC-3, AC-9, AC-10 | Tests incl. forced PayPal 5xx + duplicate submit → one order; approve-after-expiry → zero `captureOrder` calls; double-approve idempotent; crash-after-capture reconcile; foreign order id ignored |
+| T-029 | **Live e2e runner (`pnpm e2e:live`):** Playwright signs in as the sandbox buyer, approves the order, API captures; prints the real `capture_id` and the matching audit row; mock runs labeled `MOCK` and excluded from evidence | MUST | T-007, T-008 | AC-1, AC-15, rule §3.6 | Raw output with real capture id + audit row; 20 consecutive runs 20/20 |
 
 ## Phase 2 — Policy engine and attack suite (17–23 Oct)
 
@@ -41,7 +42,7 @@ Every task's DoD is evidence per `skill.md §3`: real diff + real command output
 |----|------|------|---------|-----------|--------------|
 | T-014 | Evil store pages (hidden text, review injection, Unicode) | MUST | T-006 | A-01, A-08, A-10 | Page fixtures + scanner output |
 | T-015 | Shopper agent: 4-tool loop, defensive + vulnerable modes, provenance set by tool wrapper | MUST | T-009, T-014 | skill B, FR-19, AC-7 | Transcript of agent tricked in vulnerable mode, blocked by gateway; static check output for AC-7 |
-| T-016 | Step-up approval API + queue + timeout (fail closed) | MUST | T-012 | FR-16–18, AC-2, AC-4 | Tests: approve once, reject, timeout, revoke-mid-flight |
+| T-016 | Owner-confirm API + queue + timeout (fail closed); `approve_url` withheld until confirmed | MUST | T-012 | FR-16–18, AC-2, AC-4 | Tests: approve once, reject, timeout, revoke-mid-flight |
 | T-017 | Circuit breaker (SUSPENDED) | SHOULD | T-016 | FR-30 | Test: N attack DENYs → SUSPENDED; resume by user |
 | T-018 | Dashboard: mandate wizard/detail, intents grid (AG Grid), approvals, audit explorer + verify button | MUST | T-016 | FR-25 | Screenshots + Playwright smoke output |
 | T-019 | Auth for user vs agent (bearer tokens, mandate-scoped, rate limit) | MUST | T-005 | FR-18, FR-31 | Tests: agent token cannot call user endpoints; 429 on flood |
@@ -70,7 +71,7 @@ Every task's DoD is evidence per `skill.md §3`: real diff + real command output
 
 | Date | Question | If "no" |
 |------|----------|---------|
-| 9 Oct | Is Plan A or B locked with a real sandbox capture? | Force Plan B; continue |
+| 9 Oct | Is Plan A or B locked? | **Done: Plan B locked (11 Oct record).** In-app real capture still open → T-029 |
 | 16 Oct | Does the golden path pass 20/20 with real sandbox? | Stop all new work; fix reliability |
 | 23 Oct | Attack suite 12/12? | Cut dashboard polish, fix policy first |
 | 30 Oct | Agent demo (tricked → blocked) recorded on a rough take? | Cut SHOULD items (T-017, T-021–T-023) |
@@ -80,3 +81,19 @@ Every task's DoD is evidence per `skill.md §3`: real diff + real command output
 ## Capacity note
 
 Estimates assume focused daily work. If other commitments overlap any phase, **cut scope using the tier order** rather than compressing testing or the fresh-clone check.
+
+## Progress snapshot (self-reported by repo walkthroughs, 11 Oct 2026 — evidence still required)
+
+| Area | Reported state | Evidence needed before ticking |
+|------|----------------|--------------------------------|
+| Typecheck, lint, tests (195), attack suite (32, 12 scenarios), production build | Reported green at `v0.9.0-rc2` | Raw terminal output + commit hash in the final evidence bundle |
+| Multi-process SQLite concurrency (200 events, 4 processes) | Reported pass | Raw `pnpm test:concurrency` output |
+| Order-substitution fix, server-side order id, preflight, unified order creation (INV-2) | Reported done | Regression tests for AC-13; spy test must be non-vacuous and cover **all** PayPal calls |
+| Webhook forgery rejection (HTTP 400) | Reported test added | Real signature verification against PayPal still unproven |
+| Real capture | Proven only by a standalone script | **T-029** (in-app capture with a real id in the audit log) |
+| Expiry sweeper, reservation release, atomic `CAPTURING` flip, approve-after-expiry test | Not yet reported | T-008, AC-12 |
+| Idempotent `ORDER_ALREADY_CAPTURED` reconcile | Not yet reported | T-008, AC-14 |
+| STEP_UP semantics under Plan B (approve link withheld until owner confirms) | Not yet reported | T-016 |
+| Payer-id binding, merchant-id check, STEP_UP for first-time SKUs | Open (SHOULD) | FR-35 |
+| Docs consolidation (single `docs/` source), README/demo/risk aligned to Plan B | Open | Link check + review |
+| 20-run reliability, `verify-fresh-clone`, README <10 min, hosted URL, video, Devpost | Not started | rule §5 checklist |

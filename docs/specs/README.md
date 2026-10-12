@@ -1,7 +1,7 @@
-# MandatePay — Spec-Driven Development Pack
+# AegisMandate (formerly MandatePay) — Spec-Driven Development Pack
 
 > A mandate-based control plane that lets AI agents spend money safely.
-> The LLM *proposes*. A deterministic policy engine *decides*. PayPal (sandbox) *executes*.
+> The LLM *proposes*. A deterministic policy engine *decides*. PayPal (sandbox) *executes — after the payer approves* (Plan B, locked 11 Oct 2026).
 
 Target: **PayPal AI Hackathon** (Devpost). Submission deadline: **12 Nov 2026, 12:00 PT** (= 13 Nov 2026, 03:00 WIB).
 Internal target: submit by **10 Nov 2026** (2-day buffer).
@@ -36,10 +36,11 @@ If two files disagree, fix the lower-priority file, never silently pick one.
 
 | Area | Status | Evidence link / commit |
 |------|--------|------------------------|
-| PayPal sandbox spike (T-002) | not started | |
-| Mandate + policy engine + reservations (Phase 1–2) | not started | |
-| Attack suite A-01..A-12 (Phase 2) | not started | |
-| Agent runtime + step-up (Phase 3) | not started | |
+| PayPal sandbox spike (T-002) | done — Plan B locked (11 Oct) | tech.md §4.3–4.4 |
+| Mandate + policy engine + reservations (Phase 1–2) | implemented per repo (self-reported, `v0.9.0-rc2`) | tasks.md progress snapshot |
+| Attack suite A-01..A-12 (Phase 2) | implemented per repo (self-reported) | tasks.md progress snapshot; add forged-webhook and nested-value cases |
+| Agent runtime + owner confirmation (Phase 3) | partly reported; STEP_UP-under-Plan-B open | tasks.md |
+| Live e2e with real capture (T-029) | **open — top priority** | |
 | Dashboard (Phase 3) | not started | |
 | Dispute module (Phase 4, Should) | not started | |
 | README + video + Devpost text (Phase 5) | not started | |
@@ -47,7 +48,7 @@ If two files disagree, fix the lower-priority file, never silently pick one.
 ## Bootstrap prompt for an AI coding agent
 
 ```text
-You are working on MandatePay. Before writing any code, read, in order:
+You are working on AegisMandate. Before writing any code, read, in order:
 README.md, rule.md, skill.md, product.md, spec.md, design.md, tech.md, tasks.md.
 Work on exactly one task ID from tasks.md at a time. Obey rule.md absolutely.
 Never claim a task is done without the evidence required by skill.md section 3.

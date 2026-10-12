@@ -49,7 +49,7 @@ flowchart LR
 
 ## 4. Key flows
 
-### 4.1 Happy path (ALLOW)
+### 4.1 Happy path (ALLOW) — Plan B
 
 ```mermaid
 sequenceDiagram
@@ -58,18 +58,22 @@ sequenceDiagram
   participant PE as Policy
   participant EX as Executor
   participant PP as PayPal Sandbox
-  A->>API: POST /v1/intents (proposal)
+  participant U as Payer (sandbox buyer)
+  A->>API: POST /v1/intents/propose (proposal)
   API->>PE: evaluate(mandate, intent, server facts)
   PE-->>API: ALLOW + trace
   Note over API: BEGIN IMMEDIATE → write decision + reserve budget (FR-26)
-  API->>EX: execute(intent)
-  Note over EX: Recheck P-00, P-04, reservation, payload_hash (FR-28/29)
-  EX->>PP: create order (payee from registry, verified amount)
-  EX->>PP: authorize/approve via vaulted token (Plan A) or approve link (Plan B)
-  EX->>PP: capture
-  PP-->>API: webhook PAYMENT.CAPTURE.COMPLETED (or poll)
-  API-->>A: Decision + status
-  Note over API: Every arrow above → audit event
+  API->>EX: create order
+  EX->>PP: POST /v2/checkout/orders (payee from registry, verified amount, reference_id = intent_id)
+  PP-->>EX: order id + approve link
+  API-->>A: Decision + approve_url (intent AWAITING_PAYER_APPROVAL)
+  U->>PP: reviews real payee + amount, clicks Approve
+  PP-->>API: webhook CHECKOUT.ORDER.APPROVED (or polling GET order)
+  Note over API,EX: Flip to CAPTURING atomically; recheck reservation HELD, not expired (FR-34)
+  EX->>PP: GET order → preflight status/amount/currency/reference_id/payee (FR-35)
+  EX->>PP: POST capture (PayPal-Request-Id = f(intent_id))
+  PP-->>API: PAYMENT.CAPTURE.COMPLETED
+  Note over API: Every arrow → audit event. Unapproved past TTL → EXPIRED, reservation released.
 ```
 
 ### 4.2 Blocked attack (DENY) — the demo money shot
@@ -88,11 +92,23 @@ sequenceDiagram
 
 ### 4.3 Step-up
 
-`STEP_UP` → approval row (`PENDING`, expires at `now + timeout`) → dashboard queue → user approves **a specific `payload_hash`** (FR-28) → executor rechecks freshness (mandate still ACTIVE, price unchanged, hash identical — FR-29) → capture. Reject/timeout → terminal, reservation released, no order. At most `max_pending_approvals` pending per mandate (FR-27).
+`STEP_UP` → approval row (`PENDING`, expires at `now + timeout`), **no order and no `approve_url` yet** → dashboard queue → owner confirms **a specific `payload_hash`** (FR-28/38) → executor rechecks freshness (mandate still ACTIVE, price unchanged, hash identical — FR-29) → creates the order and returns `approve_url` → same tail as §4.1 (payer approval → preflight → capture). Reject/timeout → terminal, reservation released, no order. At most `max_pending_approvals` pending per mandate (FR-27).
 
 ### 4.4 Dispute copilot (S1)
 
 `CUSTOMER.DISPUTE.CREATED` (verified) → fetch dispute → match `capture_id` to local order → assemble evidence (order record, delivery data from demo store, mandate + audit extract) → **evidence-draft LLM** (read-only context, no payment tools) → draft shown in dashboard → human approves → `provide-evidence`.
+
+### 4.5 Order lifecycle, expiry and races (Plan B)
+
+| State | Entered when | Reservation | Leaves via |
+|-------|--------------|-------------|-----------|
+| `ORDER_CREATED` | order created at PayPal | HELD | approve link issued → `AWAITING_PAYER_APPROVAL` |
+| `AWAITING_PAYER_APPROVAL` | `approve_url` returned | HELD until `expires_at` | payer approves → `PAYER_APPROVED`; TTL → `EXPIRED` |
+| `PAYER_APPROVED` | webhook / poll shows `APPROVED` | HELD | executor starts capture |
+| `CAPTURING` | atomic flip inside `BEGIN IMMEDIATE` | HELD (sweeper must skip) | PayPal success → `CAPTURED` (reservation → CAPTURED); failure → `FAILED` (released) |
+| `EXPIRED` / `FAILED` / `REJECTED` | timeout, preflight failure, owner rejection | RELEASED | terminal |
+
+Race rules: (1) the sweeper only touches `AWAITING_PAYER_APPROVAL` rows past `expires_at`; (2) the capture path flips to `CAPTURING` first, in the same transaction that checks `HELD` and not-expired, so expiry and capture are mutually exclusive; (3) approving after expiry finds `EXPIRED` and is refused with zero `captureOrder` calls; (4) PayPal calls happen outside transactions, with the result recorded in a second short transaction; (5) on startup, `CAPTURING` rows are reconciled via `GET order` (FR-37). Preflight failure releases the reservation and audits the reason.
 
 ## 5. Data model (SQLite)
 
@@ -107,7 +123,7 @@ sequenceDiagram
 | `intents` | id, mandate_id, status, proposal_json, received_at |
 | `decisions` | id, intent_id, verdict, reason_codes, risk_json, trace_json, engine_version |
 | `approvals` | id, intent_id, status, payload_hash, expires_at, decided_by, decided_at |
-| `orders` | id, intent_id, paypal_order_id, capture_id, status, amount_minor |
+| `orders` | id, intent_id, paypal_order_id (server-side only, FR-36), capture_id, status, amount_minor, approve_url, expires_at, payer_id |
 | `webhook_events` | paypal_event_id (UNIQUE), type, verified, payload, received_at |
 | `disputes` | id, paypal_dispute_id, order_id, status, draft_json |
 | `audit_log` | seq (PK, contiguous), ts, actor, type, ref, payload, prev_hash (UNIQUE), hash |
@@ -139,7 +155,7 @@ Single-writer append inside the same DB transaction as the state change it recor
 ## 10. Dashboard UX (wireframes)
 
 ```
-┌ MandatePay ───────────────────────────────────────────────────────┐
+┌ AegisMandate ───────────────────────────────────────────────────────┐
 │ Mandates │ Intents │ Approvals (2) │ Audit │ Disputes │ Demo ▸    │
 ├──────────────────────────────────────────────────────────────────┤
 │ Mandate mnd_01H…  ACTIVE   expires in 03:41:12     [Revoke]      │
@@ -152,7 +168,7 @@ Single-writer append inside the same DB transaction as the state change it recor
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Screens: **Mandate wizard** (4 steps: scope → limits → expiry → link PayPal), **Mandate detail**, **Approval queue** (card with items, amount, reasons, risk signals, Approve/Reject, countdown), **Audit explorer** (grid + "Verify chain" button with green/red state), **Dispute draft review** (S1), **Demo console** (run attack A-01…A-12, split-screen view).
+Screens: **Mandate wizard** (4 steps: scope → limits → expiry → link PayPal), **Mandate detail**, **Approval queue** (owner confirmation card with items, amount, reasons, risk signals, Confirm/Reject, countdown), **Awaiting payer approval** panel (approve link, countdown, expire/release status), **Audit explorer** (grid + "Verify chain" button with green/red state), **Dispute draft review** (S1), **Demo console** (run attack A-01…A-12, split-screen view).
 
 Circuit-breaker UX: a `SUSPENDED` mandate shows a red banner with the triggering events and a single "Review & resume" action (FR-30).
 

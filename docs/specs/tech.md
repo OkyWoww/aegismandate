@@ -97,7 +97,7 @@ Secrets never committed; `.env` in `.gitignore`; CI uses repository secrets only
 | Create order | `POST /v2/checkout/orders` (`intent: CAPTURE`, `purchase_units[].payee` from registry, amount = verified total) | MUST |
 | Get order | `GET /v2/checkout/orders/{id}` | MUST |
 | Capture | `POST /v2/checkout/orders/{id}/capture` | MUST |
-| Vault buyer payment source (Plan A) | Vault v3: setup token → payment token (`/v3/vault/...`) | MUST (Plan A) |
+| Vault buyer payment source | Vault v3 (`/v3/vault/...`) | **Not used** (Plan B locked; future work) |
 | Verify webhook | `POST /v1/notifications/verify-webhook-signature` | MUST |
 | Disputes | `GET /v1/customer/disputes`, `GET /v1/customer/disputes/{id}`, `POST /v1/customer/disputes/{id}/provide-evidence` | SHOULD |
 | Agent Toolkit / MCP (read-only dispute & transaction lookups) | PayPal Agent Toolkit (TypeScript) / PayPal MCP server | SHOULD (S3) |
@@ -108,32 +108,26 @@ Webhook events handled: `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`, 
 
 | Assumption | Result | Date | Notes |
 |------------|--------|------|-------|
-| Orders create+capture works in sandbox with a sandbox merchant as payee | VERIFIED | 2026-10-08 | Orders v2 API `POST /v2/checkout/orders` with `intent: CAPTURE`, `purchase_units[].payee`, and `PayPal-Request-Id` idempotency header verified; requires buyer approval link before capture. |
-| Vault v3 (saved payment token) usable in sandbox for off-session capture | REJECTED (Permission Missing) | 2026-10-08 | Vault v3 setup-tokens (`/v3/vault/setup-tokens`) requires Reference Transactions and approved vault underwriting permissions not enabled on standard sandbox business accounts (fails with 403 / 422 `PERMISSION_DENIED`). Plan B LOCKED per gate criteria §4.4. |
-| Webhook signature verification endpoint works with sandbox webhook id | VERIFIED | 2026-10-08 | Endpoint `POST /v1/notifications/verify-webhook-signature` returns `{ verification_status: 'SUCCESS' \| 'FAILURE' }` validating RSA/SHA256 signatures. |
-| Disputes can be created in sandbox (buyer resolution center) and fetched via API | VERIFIED (Structure / Seeded) | 2026-10-08 | `GET /v1/customer/disputes` endpoint schema mapped; seeded dispute fixtures utilized for offline/local deterministic execution (NFR-4/5). |
-| Agent Toolkit package name/version and supported tools | VERIFIED | 2026-10-08 | Read-only dispute and transaction lookup tools mapped for S3 integration. |
+| Orders create+capture works in sandbox with a sandbox merchant as payee | Create/get verified live; capture verified live after buyer approval via a standalone script; in-app capture pending T-029 | 2026-10-11 | Plan B flow |
+| Vault v3 (saved payment token) usable in sandbox for off-session capture | Not pursued: setup-token returned `PAYER_ACTION_REQUIRED`; off-session capture not demonstrated | 2026-10-11 | Plan B locked |
+| Webhook signature verification endpoint works with sandbox webhook id | | | |
+| Disputes can be created in sandbox (buyer resolution center) and fetched via API | | | Decides whether S1 is real or seeded |
+| Agent Toolkit package name/version and supported tools | | | |
 
-### 4.3.1 Plan A vs Plan B Decision Gate (Formally Locked: Plan B)
-- **Gate Outcome:** **Plan B FORMALLY LOCKED** (Decision closed ahead of 9 Oct 2026 deadline).
-- **Core Architecture:** AegisMandate operates on **Plan B (Human-in-the-Loop / Server-Gated Approval Link Flow)**. The mandate functions as a **cryptographic bounding box (blast radius containment plane)**.
-- **Why Plan B is Structurally Superior for Untrusted Agent Containment:**
-  1. Default PayPal developer sandbox business accounts enforce that Vault v3 off-session Reference Transactions require custom merchant underwriting permissions, returning `PERMISSION_DENIED` / `UNPROCESSABLE_ENTITY` (403/422).
-  2. Under Plan B, the Control Plane strictly gates *whether* an order is created, verifying amount (`P-04`), payee registry (`P-03`), cumulative spend (`P-08`), and HMAC integrity (`P-00`).
-  3. The mandate sets hard mathematical boundaries (per-transaction cap, total budget cap, merchant allowlist, category filters). Any proposal violating these boundaries is rejected outright before reaching PayPal.
-  4. Out-of-band or high-risk requests trigger interactive step-up approval (`STEP_UP`), generating a cryptographic payload hash (`FR-28`) bound to a PayPal checkout approval link (`rel: approve`).
-- **Residual Risk & Containment Guarantees:**
-  - Even if an autonomous agent is completely hijacked by indirect prompt injection, it **cannot cause unbounded financial loss**: loss is strictly bounded by `per_txn_limit` and `total_budget`.
-  - The payee cannot be redirected to an attacker because PayPal orders strictly pull the payee from the server-side Merchant Registry (`INV-2`), ignoring all agent payload hints.
-- **Honesty in Claims (rule §3.4):** System documentation, README, and demo script explicitly present buyer authorization as server-gated per-purchase checkout under Plan B.
+### 4.4 Buyer authorization — **Plan B locked (11 Oct 2026)**
 
-### 4.4 Plan A / Plan B for buyer authorization
+**Decision record.** The Vault v3 spike ended with setup-token creation returning `PAYER_ACTION_REQUIRED`; unattended off-session capture with a stored token was not demonstrated, and the timebox/gate (9 Oct) passed. Plan B is therefore locked and not revisited before submission.
 
-- **Plan A (preferred):** at mandate activation the user approves PayPal once and a vaulted payment token is stored (reference only, never raw instruments). In-mandate `ALLOW` intents capture without per-purchase user interaction — this is what makes "agentic" real.
-- **Plan B (fallback if Vault is unavailable in sandbox):** each executable intent creates an order and the user completes PayPal approval via the returned approve link; policy still gates *whether* an order is created and with what payee/amount. Demo copy must be honest that approval is per-purchase.
-- Decision is recorded in `tech.md §4.3` and in the README ("What is real vs. simulated").
-- **Gate criterion (precise):** Plan A passes only if a vaulted payment token, created after a one-time buyer approval at activation, **captures an order later with no buyer interaction**. If setup-token/payment-token creation is rejected, or the later off-session capture is rejected, lock Plan B immediately (**VERIFY** the exact failure mode and record it in §4.3).
-- **Timebox (hard):** the Vault spike gets at most 4 working hours inside T-002 and the Plan A/B gate closes at the end of **9 Oct 2026**. If Plan A is not demonstrably working by then (e.g. sandbox account lacks the needed vault/reference-transaction capability — **VERIFY**, do not assume), lock Plan B and never revisit it before submission. Plan B is a valid submission as long as policy gating is deterministic and the README says so honestly.
+**Plan B flow (server-gated approve link):**
+1. Policy ALLOW (or owner-confirmed STEP_UP) → server creates the order (`intent: CAPTURE`, payee from registry, verified amount, `reference_id = intent_id`) and returns `approve_url`; intent `AWAITING_PAYER_APPROVAL`, reservation HELD.
+2. The payer approves on PayPal's approval page (sandbox buyer).
+3. Approval is detected via webhook `CHECKOUT.ORDER.APPROVED` or polling `GET order`.
+4. Executor flips to `CAPTURING`, runs preflight (FR-35), captures with a deterministic `PayPal-Request-Id`, records the capture, audits.
+5. Unapproved past `payer_approval_timeout_seconds` → `EXPIRED`, reservation released; later approval cannot be captured (FR-34).
+
+**Honesty statement (README, video, Devpost):** every order is approved by the payer on PayPal; the agent never pays on its own. Unattended Vault-based payments are future work.
+
+**Evidence rules:** only runs against the real sandbox count as PayPal proof; mock runs print `MOCK`; `pnpm smoke` stops at `AWAITING_PAYER_APPROVAL` and must not claim capture; `pnpm e2e:live` scripts buyer approval with Playwright and prints the real capture id plus the matching audit row.
 
 ### 4.5 Webhooks in local runs
 Judges running locally cannot receive webhooks without a tunnel. Therefore: (1) webhook receiver implemented and verified against PayPal; (2) **polling fallback** reconciles order/dispute state when webhooks do not arrive; (3) README documents optional tunnel setup (e.g., a Cloudflare/ngrok tunnel) for webhook testing; (4) the hosted Render demo (S2) receives real webhooks.
@@ -156,6 +150,8 @@ pnpm attack-suite       # runs A-01..A-12 against the policy + API, prints PASS/
 pnpm seed               # demo mandate, merchants, catalog
 pnpm dev                # api + stores + web (+ agent on demand)
 pnpm e2e                # Playwright smoke (happy path + one attack)
+pnpm smoke              # real sandbox; stops at AWAITING_PAYER_APPROVAL (no capture claimed)
+pnpm e2e:live           # Playwright signs in as sandbox buyer, approves; API captures; prints real capture_id + audit row
 pnpm verify-fresh-clone # scripts/verify-fresh-clone: clone to temp dir, install, run tests, boot, hit /health
 pnpm test:concurrency   # AC-8 reservation race + AC-11 audit burst (>=200 events)
 ```

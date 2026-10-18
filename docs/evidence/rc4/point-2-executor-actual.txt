@@ -1,0 +1,233 @@
+================================================================================
+ EVIDENCE: POINT 2 - VERBATIM EXECUTOR SHA256, SELECT-STRING & ACTUAL SERVER.TS
+================================================================================
+Generated: 2026-10-18T14:14:00Z
+Target Commit / Tag: v0.9.0-rc3 (266d78baf87286edba6a1342810ca60a189d8ca9)
+
+1. TERMINAL OUTPUT: git cat-file -p v0.9.0-rc3:apps/api/src/executor.ts | sha256sum
+eedf92da044413d51cdd390da270e5cf3d6a40ad74484a4be59fb6b5517a99c6 *-
+
+2. TERMINAL OUTPUT: git show v0.9.0-rc3:apps/api/src/executor.ts | Select-String "withImmediateTransaction|deps\.store|SETTLED|any"
+import { MandateService, withImmediateTransaction } from './mandate-service.js';
+    withImmediateTransaction(db, () => {
+  return withImmediateTransaction(db, () => {
+ * completely ignoring any payee hints, emails, or strings from agent proposals/rationale.
+  const preCheck = withImmediateTransaction(db, () => {
+      withImmediateTransaction(db, () => {
+      withImmediateTransaction(db, () => {
+    // If ANY field is missing or undefined -> immediately fail with PREFLIGHT_VALIDATION_FAILED, release reservation, write audit event, and make ZERO captureOrder calls.
+      withImmediateTransaction(db, () => {
+        withImmediateTransaction(db, () => {
+            withImmediateTransaction(db, () => {
+          withImmediateTransaction(db, () => {
+    withImmediateTransaction(db, () => {
+    // If ANY unhandled error escapes, ensure intent does not remain stranded in CAPTURING.
+    withImmediateTransaction(db, () => {
+  settled: boolean;
+  let settled = false;
+      settled = true;
+    withImmediateTransaction(db, () => {
+    settled,
+
+3. ACTUAL CODE IN HEAD: authenticateOwner (apps/api/src/server.ts lines 67-108)
+export function authenticateOwner(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  tokens: { ownerToken?: string | undefined; agentToken?: string | undefined },
+): boolean {
+  const authHeader = request.headers['authorization'];
+  const token = extractBearerToken(authHeader);
+
+  if (!token) {
+    reply.code(401).send({
+      error: 'UNAUTHORIZED',
+      message: 'Authorization header with Bearer token is required (INV-4, FR-18)',
+      statusCode: 401,
+    });
+    return false;
+  }
+
+  const effectiveAgentToken = tokens.agentToken ?? process.env['AGENT_TOKEN'];
+  const effectiveOwnerToken = tokens.ownerToken ?? process.env['OWNER_TOKEN'];
+
+  // Explicitly reject agent tokens with 403 Forbidden
+  if (effectiveAgentToken && safeTokenCompare(token, effectiveAgentToken)) {
+    reply.code(403).send({
+      error: 'FORBIDDEN',
+      message: 'Agent tokens are forbidden from calling human authorization endpoints (FR-18, FR-31, INV-4)',
+      statusCode: 403,
+    });
+    return false;
+  }
+
+  // Allowlist: strictly verify matching owner token via timingSafeEqual
+  if (!effectiveOwnerToken || !safeTokenCompare(token, effectiveOwnerToken)) {
+    reply.code(401).send({
+      error: 'UNAUTHORIZED',
+      message: 'Invalid owner authorization token (INV-4, FR-18)',
+      statusCode: 401,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+4. ACTUAL CODE IN HEAD: handleApprove (apps/api/src/server.ts lines 334-489)
+  const handleApprove = async (
+    id: string,
+    expectedPayloadHash: string | undefined,
+    request: FastifyRequest | undefined,
+    reply: FastifyReply,
+  ) => {
+    // Enforce FR-18, FR-31, INV-4: Strict owner allowlist via timingSafeEqual
+    if (!request || !authenticateOwner(request, reply, { ownerToken: resolvedOwnerToken, agentToken: resolvedAgentToken })) {
+      return;
+    }
+
+    const nowTs = getNow();
+
+    // Lazy check on approval timeout (FR-34, AC-12)
+    checkAndExpireIntent(db, mandateService, id, nowTs);
+
+    const row = db
+      .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
+      .get(id) as {
+        intent_id: string;
+        verdict: string;
+        status: string;
+        order_id: string | null;
+        capture_id: string | null;
+      } | undefined;
+
+    if (!row) {
+      return reply.code(404).send({
+        error: 'INTENT_NOT_FOUND',
+        message: `Intent '${id}' not found for approval`,
+      });
+    }
+
+    if (row.status === 'EXPIRED') {
+      const errCode = row.verdict === 'STEP_UP' ? 'STEP_UP_TIMEOUT' : 'PAYER_APPROVAL_TIMEOUT';
+      return reply.code(422).send({
+        error: errCode,
+        message: `Approval rejected: intent has expired (${errCode}) and reservation was released (FR-34)`,
+        refusal_reason: errCode,
+      });
+    }
+
+    if (row.status === 'CAPTURED') {
+      return reply.code(200).send({
+        status: 'CAPTURED',
+        intent_id: id,
+        order_id: row.order_id,
+        capture_id: row.capture_id,
+        message: 'Intent has already been captured',
+      });
+    }
+
+    // If order was already created and is awaiting payer approval or capturing, route through captureApprovedOrder
+    if (row.status === 'AWAITING_PAYER_APPROVAL' || row.status === 'CAPTURING') {
+      const captureResult = await captureApprovedOrder({
+        intentId: id,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: nowTs,
+      });
+
+      if (captureResult.status === 'EXPIRED') {
+        return reply.code(422).send({
+          error: 'PAYER_APPROVAL_TIMEOUT',
+          message: 'Approval rejected: intent has expired and reservation was released (FR-34)',
+          refusal_reason: 'PAYER_APPROVAL_TIMEOUT',
+        });
+      }
+
+      if (captureResult.status === 'AWAITING_PAYER_APPROVAL') {
+        return reply.code(200).send({
+          status: 'AWAITING_PAYER_APPROVAL',
+          intent_id: id,
+          order_id: captureResult.orderId,
+          message: 'Order created on PayPal; awaiting payer approval before capture',
+        });
+      }
+
+      if (captureResult.status === 'FAILED') {
+        return reply.code(400).send({
+          error: captureResult.refusalReason ?? 'CAPTURE_FAILED',
+          message: `Capture failed: ${captureResult.refusalReason}`,
+          refusal_reason: captureResult.refusalReason,
+        });
+      }
+
+      return reply.code(200).send({
+        status: 'CAPTURED',
+        intent_id: id,
+        order_id: captureResult.orderId,
+        capture_id: captureResult.captureId,
+      });
+    }
+
+    if (row.verdict !== 'STEP_UP') {
+      return reply.code(400).send({
+        error: 'INVALID_VERDICT',
+        message: `Intent '${id}' cannot be approved because verdict is '${row.verdict}' (expected 'STEP_UP')`,
+      });
+    }
+
+    // FR-28 & Rule §2.1: Human approval of a STEP_UP intent MUST supply expected_payload_hash
+    if (!expectedPayloadHash || expectedPayloadHash.trim() === '') {
+      return reply.code(422).send({
+        error: 'PAYLOAD_HASH_REQUIRED',
+        message: 'Approval rejected: expected_payload_hash is required for STEP_UP approval (FR-28)',
+        refusal_reason: 'PAYLOAD_HASH_REQUIRED',
+      });
+    }
+
+    const result = await executeApprovedStepUp({
+      intentId: id,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey,
+      expectedPayloadHash,
+      now: nowTs,
+    });
+
+    if (result.refusalReason === 'PAYLOAD_HASH_MISMATCH') {
+      return reply.code(422).send({
+        error: 'PAYLOAD_HASH_MISMATCH',
+        message: 'Approval rejected: payload hash mismatch (FR-28)',
+        refusal_reason: 'PAYLOAD_HASH_MISMATCH',
+      });
+    }
+
+    if (result.status === 'FAILED') {
+      return reply.code(400).send({
+        error: result.refusalReason ?? 'APPROVAL_EXECUTION_FAILED',
+        message: `Approval execution failed: ${result.refusalReason}`,
+        refusal_reason: result.refusalReason,
+      });
+    }
+
+    if (result.status === 'AWAITING_PAYER_APPROVAL') {
+      return reply.code(200).send({
+        status: 'AWAITING_PAYER_APPROVAL',
+        intent_id: result.intentId,
+        order_id: result.orderId,
+        approve_url: result.approveUrl,
+        message: 'Order created on PayPal; awaiting payer approval before capture',
+      });
+    }
+
+    return reply.code(200).send({
+      status: 'CAPTURED',
+      intent_id: result.intentId,
+      order_id: result.orderId,
+      capture_id: result.captureId,
+    });
+  };
+================================================================================

@@ -122,8 +122,8 @@ function createTestCatalogResolver(db: DatabaseConnection): StoreCatalogResolver
 
 describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4)', () => {
   const mandateId = 'mnd_server_test_01';
-  const TEST_OWNER_TOKEN = 'test_owner_secret_token_123';
-  const TEST_AGENT_TOKEN = 'test_agent_secret_token_456';
+  const TEST_OWNER_TOKEN = 'test_owner_secret_token_at_least_32_chars_long!';
+  const TEST_AGENT_TOKEN = 'test_agent_secret_token_at_least_32_chars_long!';
   const ownerAuthHeaders = { authorization: `Bearer ${TEST_OWNER_TOKEN}` };
   let db: DatabaseConnection;
   let mandateService: MandateService;
@@ -1089,4 +1089,108 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     expect(orderCallCount).toBe(0);
     expect(captureCallCount).toBe(0);
   });
+
+  describe('FR-18/INV-4: Strict Server Boot Validation & Token Allowlist', () => {
+    it('fails to boot if OWNER_TOKEN is missing and DEMO_MODE is false', async () => {
+      const originalDemo = process.env['DEMO_MODE'];
+      const originalOwner = process.env['OWNER_TOKEN'];
+      let bootError: Error | null = null;
+      let serverInstance: FastifyInstance | null = null;
+      try {
+        delete process.env['DEMO_MODE'];
+        delete process.env['OWNER_TOKEN'];
+        serverInstance = await buildServer({
+          db,
+          mandateService,
+          catalogResolver,
+          payPalClient,
+          hmacKey: 'a'.repeat(32),
+          ownerToken: undefined,
+        });
+      } catch (err: unknown) {
+        bootError = err as Error;
+      } finally {
+        if (serverInstance) await serverInstance.close();
+        if (originalDemo !== undefined) process.env['DEMO_MODE'] = originalDemo;
+        if (originalOwner !== undefined) process.env['OWNER_TOKEN'] = originalOwner;
+      }
+      expect(bootError).not.toBeNull();
+      expect(bootError?.message).toMatch(/OWNER_TOKEN must be configured and be at least 32 characters long/);
+    });
+
+    it('fails to boot if OWNER_TOKEN is less than 32 characters and DEMO_MODE is false', async () => {
+      const originalDemo = process.env['DEMO_MODE'];
+      const originalOwner = process.env['OWNER_TOKEN'];
+      let bootError: Error | null = null;
+      let serverInstance: FastifyInstance | null = null;
+      try {
+        delete process.env['DEMO_MODE'];
+        delete process.env['OWNER_TOKEN'];
+        serverInstance = await buildServer({
+          db,
+          mandateService,
+          catalogResolver,
+          payPalClient,
+          hmacKey: 'a'.repeat(32),
+          ownerToken: 'short_token_only_16ch',
+        });
+      } catch (err: unknown) {
+        bootError = err as Error;
+      } finally {
+        if (serverInstance) await serverInstance.close();
+        if (originalDemo !== undefined) process.env['DEMO_MODE'] = originalDemo;
+        if (originalOwner !== undefined) process.env['OWNER_TOKEN'] = originalOwner;
+      }
+      expect(bootError).not.toBeNull();
+      expect(bootError?.message).toMatch(/OWNER_TOKEN must be configured and be at least 32 characters long/);
+    });
+
+    it('boots in DEMO_MODE by generating an ephemeral token if OWNER_TOKEN is unset', async () => {
+      const originalDemo = process.env['DEMO_MODE'];
+      const originalOwner = process.env['OWNER_TOKEN'];
+      try {
+        process.env['DEMO_MODE'] = 'true';
+        delete process.env['OWNER_TOKEN'];
+        const demoServer = await buildServer({
+          db,
+          mandateService,
+          catalogResolver,
+          payPalClient,
+          hmacKey: 'a'.repeat(32),
+          ownerToken: undefined,
+        });
+        expect(demoServer).toBeDefined();
+        await demoServer.close();
+      } finally {
+        if (originalDemo !== undefined) process.env['DEMO_MODE'] = originalDemo;
+        if (originalOwner !== undefined) process.env['OWNER_TOKEN'] = originalOwner;
+      }
+    });
+
+    it('when booted with valid OWNER_TOKEN: returns 401 without token, 403 with agent token, and allows with owner token', async () => {
+      // 1. Without token => 401
+      const resNoToken = await server.inject({
+        method: 'POST',
+        url: '/v1/intents/int_mock_test/reject',
+      });
+      expect(resNoToken.statusCode).toBe(401);
+
+      // 2. With agent token => 403
+      const resAgentToken = await server.inject({
+        method: 'POST',
+        url: '/v1/intents/int_mock_test/reject',
+        headers: { authorization: `Bearer ${TEST_AGENT_TOKEN}` },
+      });
+      expect(resAgentToken.statusCode).toBe(403);
+
+      // 3. With owner token => passes auth (returns 404 for nonexistent intent, proving 401/403 auth guard passed)
+      const resOwnerToken = await server.inject({
+        method: 'POST',
+        url: '/v1/intents/int_mock_test/reject',
+        headers: { authorization: `Bearer ${TEST_OWNER_TOKEN}` },
+      });
+      expect(resOwnerToken.statusCode).toBe(404);
+    });
+  });
 });
+

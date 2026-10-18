@@ -329,7 +329,7 @@ aegismandate/
 ## 8. Quickstart for Judges (< 5 Minutes)
 
 ### Prerequisites
-- Node.js `>= 20.x` (or Node.js 22 LTS)
+- Node.js `>= 22.13.0` (Node.js 22 LTS with built-in `node:sqlite` DatabaseSync)
 - `pnpm` (`npm install -g pnpm`)
 
 ### Option A: Automated One-Command Verification

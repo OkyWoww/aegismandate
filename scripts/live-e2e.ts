@@ -23,7 +23,11 @@ const E2E_PORT = Number(process.env.E2E_PORT || 3098);
 const E2E_HOST = '127.0.0.1';
 const E2E_DB_PATH = path.resolve(process.cwd(), './data/e2e-live-test.db');
 const HMAC_KEY = 'mandatepay_demo_hmac_secret_key_default_32chars_for_local_testing';
-const OWNER_TOKEN = process.env['OWNER_TOKEN'] || 'mandate_owner_secret_token_default';
+const OWNER_TOKEN = process.env['OWNER_TOKEN'] || '';
+if (!OWNER_TOKEN || OWNER_TOKEN.length < 32) {
+  throw new Error('OWNER_TOKEN env variable must be configured with at least 32 characters');
+}
+process.env['OWNER_TOKEN'] = OWNER_TOKEN;
 const BASE_URL = `http://${E2E_HOST}:${E2E_PORT}`;
 
 function redactSensitive(str: string): string {
@@ -137,8 +141,20 @@ async function main() {
     const page = await context.newPage();
 
     try {
-      console.log('      Navigating to PayPal approval URL...');
-      await page.goto(propBody.approve_url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          if (attempt > 1) {
+            console.log(`      [Navigation Retry ${attempt}/2]: Retrying PayPal approval page navigation...`);
+          }
+          await page.goto(propBody.approve_url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          break;
+        } catch (err: unknown) {
+          if (attempt === 2) throw err;
+          const msg = err instanceof Error ? err.message : String(err);
+          console.log(`      [Navigation Timeout]: ${msg || 'Gateway delayed'}, retrying navigation once...`);
+          await page.waitForTimeout(3000);
+        }
+      }
       await page.waitForTimeout(3000);
       console.log(`      Current URL: ${page.url()}`);
       console.log(`      Page title: ${await page.title()}`);
@@ -181,8 +197,12 @@ async function main() {
         const loginBtn = page.locator('#btnLogin, button:has-text("Log In")');
         await loginBtn.first().click();
         console.log('      Submitted login credentials, awaiting redirect...');
-        await page.waitForLoadState('domcontentloaded');
-        await page.waitForTimeout(5000);
+        try {
+          await page.waitForLoadState('domcontentloaded', { timeout: 20000 });
+        } catch {
+          console.log('      [LoadState Note]: Continuing to check approval button selector...');
+        }
+        await page.waitForTimeout(4000);
       }
 
       console.log(`      Post-login URL: ${page.url()}`);

@@ -43,13 +43,15 @@ for (let i = 1; i <= TOTAL_RUNS; i++) {
       results.push({ run: i, status: 'FAIL', durationMs: elapsed, error: 'Verification marker missing' });
       console.log(`    Result: ❌ FAIL in ${elapsed}ms | Unexpected output`);
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     const elapsed = Date.now() - t0;
     failCount++;
-    const errOutput = String(err.stdout || '') + '\n' + String(err.stderr || err.message);
+    const errObj = err as { stdout?: string; stderr?: string; message?: string };
+    const errMsg = errObj.message || String(err);
+    const errOutput = String(errObj.stdout || '') + '\n' + String(errObj.stderr || errMsg);
     fs.writeFileSync(path.join(logDir, `run-${String(i).padStart(2, '0')}-fail.log`), errOutput, 'utf8');
-    results.push({ run: i, status: 'FAIL', durationMs: elapsed, error: err.message });
-    console.log(`    Result: ❌ FAIL in ${elapsed}ms | Error: ${err.message}`);
+    results.push({ run: i, status: 'FAIL', durationMs: elapsed, error: errMsg });
+    console.log(`    Result: ❌ FAIL in ${elapsed}ms | Error: ${errMsg}`);
   }
 }
 

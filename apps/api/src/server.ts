@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import {
@@ -62,6 +62,7 @@ export function extractBearerToken(authHeader: string | undefined): string | nul
  * - Missing/non-Bearer/invalid token => 401 Unauthorized
  * - Agent token attempting human action => 403 Forbidden
  * - Matching owner token => allowed
+ * All fallback defaults are strictly removed.
  */
 export function authenticateOwner(
   request: FastifyRequest,
@@ -80,11 +81,11 @@ export function authenticateOwner(
     return false;
   }
 
-  const effectiveAgentToken = tokens.agentToken ?? process.env['AGENT_TOKEN'] ?? 'mandate_agent_secret_token_default';
-  const effectiveOwnerToken = tokens.ownerToken ?? process.env['OWNER_TOKEN'] ?? 'mandate_owner_secret_token_default';
+  const effectiveAgentToken = tokens.agentToken ?? process.env['AGENT_TOKEN'];
+  const effectiveOwnerToken = tokens.ownerToken ?? process.env['OWNER_TOKEN'];
 
   // Explicitly reject agent tokens with 403 Forbidden
-  if (safeTokenCompare(token, effectiveAgentToken)) {
+  if (effectiveAgentToken && safeTokenCompare(token, effectiveAgentToken)) {
     reply.code(403).send({
       error: 'FORBIDDEN',
       message: 'Agent tokens are forbidden from calling human authorization endpoints (FR-18, FR-31, INV-4)',
@@ -94,7 +95,7 @@ export function authenticateOwner(
   }
 
   // Allowlist: strictly verify matching owner token via timingSafeEqual
-  if (!safeTokenCompare(token, effectiveOwnerToken)) {
+  if (!effectiveOwnerToken || !safeTokenCompare(token, effectiveOwnerToken)) {
     reply.code(401).send({
       error: 'UNAUTHORIZED',
       message: 'Invalid owner authorization token (INV-4, FR-18)',
@@ -121,6 +122,24 @@ export function authenticateOwner(
 export async function buildServer(options: ServerOptions): Promise<FastifyInstance> {
   const { db, mandateService, catalogResolver, payPalClient, hmacKey } = options;
   const getNow = options.now ?? (() => new Date().toISOString());
+
+  // Enforce OWNER_TOKEN configuration at startup (INV-4, FR-18)
+  const isDemoMode = process.env['DEMO_MODE'] === 'true' || process.env['DEMO_MODE'] === '1';
+  let resolvedOwnerToken = options.ownerToken ?? process.env['OWNER_TOKEN'];
+  const resolvedAgentToken = options.agentToken ?? process.env['AGENT_TOKEN'];
+
+  if (!resolvedOwnerToken || resolvedOwnerToken.trim().length < 32) {
+    if (isDemoMode) {
+      resolvedOwnerToken = createHash('sha256').update(randomBytes(32)).digest('hex');
+      if (!process.env['CI'] && process.env['NODE_ENV'] !== 'test') {
+        console.log(`[DEMO_MODE] Generated ephemeral OWNER_TOKEN (${resolvedOwnerToken.length} chars): ${resolvedOwnerToken}`);
+      }
+    } else {
+      throw new Error(
+        'Server startup aborted: OWNER_TOKEN must be configured and be at least 32 characters long (INV-4, FR-18). Set DEMO_MODE=true for ephemeral testing.'
+      );
+    }
+  }
 
   initExecutorTables(db);
 
@@ -321,7 +340,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     reply: FastifyReply,
   ) => {
     // Enforce FR-18, FR-31, INV-4: Strict owner allowlist via timingSafeEqual
-    if (!request || !authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+    if (!request || !authenticateOwner(request, reply, { ownerToken: resolvedOwnerToken, agentToken: resolvedAgentToken })) {
       return;
     }
 
@@ -483,7 +502,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     Params: { id: string };
     Body?: { expected_payload_hash?: string };
   }>('/v1/intents/:id/capture', async (request, reply) => {
-    if (!authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+    if (!authenticateOwner(request, reply, { ownerToken: resolvedOwnerToken, agentToken: resolvedAgentToken })) {
       return;
     }
     const { id } = request.params;
@@ -512,7 +531,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   });
 
   app.get('/v1/approvals', async (request, reply) => {
-    if (!authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+    if (!authenticateOwner(request, reply, { ownerToken: resolvedOwnerToken, agentToken: resolvedAgentToken })) {
       return;
     }
     const nowTs = getNow();
@@ -549,7 +568,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     reply: FastifyReply,
   ) => {
     // Enforce FR-18, FR-31, INV-4: Strict owner allowlist via timingSafeEqual
-    if (!request || !authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+    if (!request || !authenticateOwner(request, reply, { ownerToken: resolvedOwnerToken, agentToken: resolvedAgentToken })) {
       return;
     }
 

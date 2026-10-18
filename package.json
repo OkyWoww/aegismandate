@@ -4,7 +4,7 @@
   "version": "0.9.0-rc3",
   "type": "module",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "tsx scripts/dev.ts",

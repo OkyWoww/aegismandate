@@ -1,0 +1,74 @@
+================================================================================
+ EVIDENCE: POINT 1 - SERVER BOOT VALIDATION & OWNER_TOKEN ALLOWLIST
+================================================================================
+Generated: 2026-10-18T14:14:00Z
+Commit Ref: ec1ab1c6d86404b39517df58de09bc5c74d233c9 + Point 1 hardening
+
+1. CODE HARDENING SUMMARY:
+- Removed all fallback default tokens ('mandate_owner_secret_token_default', 'mandate_agent_secret_token_default').
+- buildServer() now strictly checks:
+  if (!resolvedOwnerToken || resolvedOwnerToken.trim().length < 32) {
+    if (isDemoMode) {
+      resolvedOwnerToken = createHash('sha256').update(randomBytes(32)).digest('hex');
+      console.log(`[DEMO_MODE] Generated ephemeral OWNER_TOKEN (${resolvedOwnerToken.length} chars): ${resolvedOwnerToken}`);
+    } else {
+      throw new Error(
+        'Server startup aborted: OWNER_TOKEN must be configured and be at least 32 characters long (INV-4, FR-18). Set DEMO_MODE=true for ephemeral testing.'
+      );
+    }
+  }
+
+2. NON-VACUOUS TEST PROOF:
+When fallback default was temporarily restored in server.ts:
+--------------------------------------------------------------------------------
+ RUN  v5.0.3 D:/mandatepay
+
+(node:16140) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ apps/api/src/server.test.ts (17 tests | 2 failed | 13 skipped) 146ms
+   ❯ Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4) (17)
+     ❯ FR-18/INV-4: Strict Server Boot Validation & Token Allowlist (4)
+       × fails to boot if OWNER_TOKEN is missing and DEMO_MODE is false 106ms
+       × fails to boot if OWNER_TOKEN is less than 32 characters and DEMO_MODE is false 9ms
+       ✓ boots in DEMO_MODE by generating an ephemeral token if OWNER_TOKEN is unset 8ms
+       ✓ when booted with valid OWNER_TOKEN: returns 401 without token, 403 with agent token, and allows with owner token 22ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/api/src/server.test.ts > Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4) > FR-18/INV-4: Strict Server Boot Validation & Token Allowlist > fails to boot if OWNER_TOKEN is missing and DEMO_MODE is false
+TypeError: Cannot read properties of undefined (reading 'family')
+ ❯ apps/api/src/server.test.ts:1109:10
+    1107|             ownerToken: undefined,
+    1108|           }),
+    1109|         ).rejects.toThrow(/OWNER_TOKEN must be configured and be at le…
+       |          ^
+
+ FAIL  apps/api/src/server.test.ts > Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4) > FR-18/INV-4: Strict Server Boot Validation & Token Allowlist > fails to boot if OWNER_TOKEN is less than 32 characters and DEMO_MODE is false
+TypeError: Cannot read properties of undefined (reading 'family')
+ ❯ apps/api/src/server.test.ts:1131:10
+    1129|             ownerToken: 'short_token_only_16ch',
+    1130|           }),
+    1131|         ).rejects.toThrow(/OWNER_TOKEN must be configured and be at le…
+       |          ^
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed | 13 skipped (17)
+--------------------------------------------------------------------------------
+
+3. RESTORED SECURE ENFORCEMENT (100% PASS):
+--------------------------------------------------------------------------------
+ RUN  v5.0.3 D:/mandatepay
+
+(node:5404) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+stdout | apps/api/src/server.test.ts > Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4) > FR-18/INV-4: Strict Server Boot Validation & Token Allowlist > boots in DEMO_MODE by generating an ephemeral token if OWNER_TOKEN is unset
+[DEMO_MODE] Generated ephemeral OWNER_TOKEN (64 chars): 31f1dcb9188dc433359c5156ba2f58d6002fca7cb014ed197cd310ab520dd331
+
+ ✓ apps/api/src/server.test.ts (17 tests | 13 skipped) 140ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed | 13 skipped (17)
+   Start at  21:12:57
+   Duration  682ms (transform 40%, import 32%, tests 26%, worker 2%)
+--------------------------------------------------------------------------------
+================================================================================

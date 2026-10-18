@@ -14,6 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import 'dotenv/config';
 import { openDb } from '../packages/audit/src/index.js';
 import { runSeed } from '../apps/stores/src/index.js';
 import { startServer } from '../apps/api/src/index.js';
@@ -30,7 +31,10 @@ const SMOKE_PORT = Number(process.env.SMOKE_PORT || 3099);
 const SMOKE_HOST = '127.0.0.1';
 const SMOKE_DB_PATH = path.resolve(process.cwd(), './data/smoke-test.db');
 const HMAC_KEY = 'mandatepay_demo_hmac_secret_key_default_32chars_for_local_testing';
-const OWNER_TOKEN = process.env['OWNER_TOKEN'] || 'mandate_owner_secret_token_default';
+const OWNER_TOKEN = process.env['OWNER_TOKEN'] || 'smoke_test_owner_secret_token_32chars_long!';
+// Supply OWNER_TOKEN into process.env so startServer boots with a validated token >= 32 chars
+process.env['OWNER_TOKEN'] = OWNER_TOKEN;
+
 const BASE_URL = `http://${SMOKE_HOST}:${SMOKE_PORT}`;
 
 function cleanupTempDb() {

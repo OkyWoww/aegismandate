@@ -12,7 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22]
+        node-version: ['22.13.0', '22.14.0']
+    env:
+      OWNER_TOKEN: ci_test_owner_secret_token_32chars_long_xyz!
+      AGENT_TOKEN: ci_test_agent_secret_token_32chars_long_xyz!
+      MANDATE_HMAC_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

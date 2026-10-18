@@ -1,0 +1,56 @@
+
+> aegismandate@0.9.0-rc3 e2e:live D:\mandatepay
+> tsx --env-file=.env scripts/live-e2e.ts
+
+================================================================================
+ MANDATEPAY LIVE SANDBOX E2E VERIFICATION (PLAYWRIGHT BUYER APPROVAL)
+================================================================================
+Endpoint:    http://127.0.0.1:3098
+Buyer:       [REDACTED_EMAIL]
+--------------------------------------------------------------------------------
+[Control Plane API] Listening at http://127.0.0.1:3098
+[1/4] Proposing purchase intent via Control Plane API...
+      Order created: 1KA31096F00173715
+      Approve URL:   https://www.sandbox.paypal.com/checkoutnow?token=1KA31096F00173715
+[2/4] Automating buyer approval via Playwright headless browser...
+      Navigating to PayPal approval URL...
+      Current URL: https://www.sandbox.paypal.com/checkoutnow?token=1KA31096F00173715
+      Page title: Log in ke rekening PayPal Anda
+      Filling buyer email credentials...
+      Filling buyer password...
+      Submitted login credentials, awaiting redirect...
+      Post-login URL: https://www.sandbox.paypal.com/webapps/hermes?flow=1-P&ulReturn=true&token=1KA31096F00173715&ssrt=1792331642982&rcache=1&useraction=CONTINUE&cookieBannerVariant=hidden&country.x=ID&locale.x=id_ID
+      Waiting for approval consent button...
+      Clicking approval consent button...
+      Clicking secondary confirmation button...
+      Buyer approval completed successfully.
+[3/4] Triggering Control Plane capture flow...
+      Authentic PayPal Capture ID: 46113616DS165481C
+[4/4] Verifying ORDER_CAPTURED row in cryptographic audit ledger...
+[5/5] Querying GET /v1/audit/verify for cryptographic chain integrity...
+      Audit ledger verification: valid=true, count=9, broken_seq=null
+================================================================================
+ LIVE E2E VERIFICATION COMPLETED (PASS)
+ Authentic Capture ID : 46113616DS165481C
+ Audit Event Ref      : int_e2e_1792331640209
+ Audit Ledger Valid   : true (broken_seq=null)
+ Audit Event (JSON)   :
+{
+  "seq": 9,
+  "ts": "2026-10-18T13:54:27.360Z",
+  "actor": "control_plane",
+  "type": "ORDER_CAPTURED",
+  "ref": "int_e2e_1792331640209",
+  "payload": {
+    "amount_minor": 900,
+    "capture_id": "46113616DS165481C",
+    "currency": "USD",
+    "order_id": "1KA31096F00173715",
+    "payee_ref": "sb-merchant-demo@business.example.com",
+    "request_id": "req_capture_order_814adab1f42dccd209c5bb81",
+    "status": "COMPLETED"
+  },
+  "prev_hash": "599245b5edf3b56d83959f1964749814ab2057c097615effd29d0e42432a11a4",
+  "hash": "5bd29c5114bdc8facee310966265ad0017cf555ef4c5145ecb790ef3f8a4e80e"
+}
+================================================================================

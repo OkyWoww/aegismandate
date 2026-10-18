@@ -13,7 +13,7 @@ console.log(` Target Command: pnpm e2e:live`);
 console.log(` Total Runs    : ${TOTAL_RUNS}`);
 console.log('='.repeat(80));
 
-const logDir = path.resolve('data/live-20-runs');
+const logDir = process.env.LOG_DIR ? path.resolve(process.env.LOG_DIR) : path.resolve('data/live-20-runs');
 if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir, { recursive: true });
 }
@@ -55,21 +55,30 @@ for (let i = 1; i <= TOTAL_RUNS; i++) {
   }
 }
 
-console.log('\n' + '='.repeat(80));
-console.log(` 20-RUN LIVE SANDBOX GATE EXECUTION SUMMARY`);
-console.log('='.repeat(80));
-console.log(` Total Runs Completed : ${TOTAL_RUNS}`);
-console.log(` Passed               : ${passCount} / ${TOTAL_RUNS}`);
-console.log(` Failed               : ${failCount} / ${TOTAL_RUNS}`);
-console.log(` Success Rate         : ${((passCount / TOTAL_RUNS) * 100).toFixed(1)}%`);
-console.log('='.repeat(80));
+const summaryLines: string[] = [
+  '='.repeat(80),
+  ' 20-RUN LIVE SANDBOX GATE EXECUTION SUMMARY',
+  '='.repeat(80),
+  ` Total Runs Completed : ${TOTAL_RUNS}`,
+  ` Passed               : ${passCount} / ${TOTAL_RUNS}`,
+  ` Failed               : ${failCount} / ${TOTAL_RUNS}`,
+  ` Success Rate         : ${((passCount / TOTAL_RUNS) * 100).toFixed(1)}%`,
+  '='.repeat(80),
+];
 
 for (const r of results) {
-  const mark = r.status === 'PASS' ? '✅ PASS' : '❌ FAIL';
+  const mark = r.status === 'PASS' ? 'PASS' : 'FAIL';
   const detail = r.captureId ? `Capture ID: ${r.captureId}` : `Error: ${r.error}`;
-  console.log(`Run ${String(r.run).padStart(2, '0')}: ${mark} (${r.durationMs}ms) - ${detail}`);
+  summaryLines.push(`Run ${String(r.run).padStart(2, '0')}: ${mark} (${r.durationMs}ms) - ${detail}`);
 }
-console.log('='.repeat(80));
+summaryLines.push('='.repeat(80));
+
+const summaryText = summaryLines.join('\n') + '\n';
+console.log('\n' + summaryText);
+
+fs.writeFileSync(path.join(logDir, 'summary.txt'), summaryText, 'utf8');
+console.log(`[Summary Persisted] Written to ${path.join(logDir, 'summary.txt')}`);
+
 
 if (failCount > 0) {
   process.exit(1);

@@ -1,0 +1,45 @@
+================================================================================
+ MANDATEPAY LIVE SANDBOX E2E VERIFICATION (PLAYWRIGHT BUYER APPROVAL)
+ Target Scenario(s) : STEPUP
+ Endpoint           : http://127.0.0.1:3098
+ Buyer              : [REDACTED_EMAIL]
+================================================================================
+[Control Plane API] Listening at http://127.0.0.1:3098
+
+--------------------------------------------------------------------------------
+ EXECUTING SCENARIO: STEP_UP Human-in-the-loop Approval ($45.00 Desk Lamp) [SCENARIO-2-STEPUP]
+--------------------------------------------------------------------------------
+[1/5] Proposing purchase intent via Control Plane API...
+[2/5] Handling STEP_UP approval flow with cryptographic expected_payload_hash binding...
+      Retrieved payload_hash: 8796c5e8acb1b8c06dff9364c5a362f47a8045f5655d84da5c8801b4b8f255f7
+      Executing owner approval via POST /v1/intents/:id/approve with OWNER_TOKEN...
+      Human Approval Succeeded! PayPal Order Created: 93N04518FV231081V
+      Approve URL:   https://www.sandbox.paypal.com/checkoutnow?token=93N04518FV231081V
+[3/5] Automating buyer approval via Playwright headless browser...
+      Current URL: https://www.sandbox.paypal.com/checkoutnow?token=93N04518FV231081V
+      Page title: Log in ke rekening PayPal Anda
+      Filling buyer email credentials...
+      Filling buyer password...
+      Submitted login credentials, awaiting redirect...
+      [LoadState Note]: Continuing to check approval button selector...
+      Post-login URL: https://www.sandbox.paypal.com/webapps/hermes?flow=1-P&ulReturn=true&token=93N04518FV231081V&ssrt=1792336670765&rcache=1&useraction=CONTINUE&cookieBannerVariant=hidden&country.x=ID&locale.x=id_ID
+      Waiting for approval consent button...
+      Clicking approval consent button...
+      Clicking secondary confirmation button...
+      Buyer approval completed successfully.
+[4/5] Triggering Control Plane capture flow (Authorized with OWNER_TOKEN)...
+      Authentic PayPal Capture ID: 4UA87267CY0330117
+[5/5] Verifying ORDER_CAPTURED row and ledger integrity...
+      Audit ledger valid: true (count=10)
+      payee_ref verified in ledger: sb-merchant-demo@business.example.com
+================================================================================
+ SCENARIO COMPLETED (PASS): STEP_UP Human-in-the-loop Approval ($45.00 Desk Lamp)
+ Authentic Capture ID : 4UA87267CY0330117
+ Audit Event Ref      : int_e2e_1792336665394_t3l8
+ Audit Ledger Valid   : true (broken_seq=null)
+================================================================================
+
+================================================================================
+ LIVE E2E VERIFICATION COMPLETED (PASS)
+ [SCENARIO-2-STEPUP] Capture ID: 4UA87267CY0330117 | Intent: int_e2e_1792336665394_t3l8
+================================================================================

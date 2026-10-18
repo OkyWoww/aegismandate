@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for test fixtures, mock data, and PayPal Sandbox Order/Capture IDs"
+paths = [
+  '''docs/evidence/''',
+  '''apps/api/src/.*test\.ts''',
+  '''packages/.*/src/.*test\.ts''',
+  '''README\.md''',
+  '''scripts/verify-failed-runs-state\.ts''',
+  '''\.github/workflows/ci\.yml''',
+]
+regexes = [
+  '''[0-9A-Z]{17}''',
+  '''tok_ac14_empty''',
+  '''ORDER-EMPTY-CAP-01''',
+  '''0123456789abcdef''',
+]

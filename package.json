@@ -23,6 +23,9 @@
     "attack-suite": "vitest run packages/sim",
     "smoke": "tsx scripts/smoke.ts",
     "e2e:live": "tsx --env-file=.env scripts/live-e2e.ts",
+    "e2e:live:stepup": "tsx --env-file=.env scripts/live-e2e.ts --scenario=stepup",
+    "e2e:live:multi": "tsx --env-file=.env scripts/live-e2e.ts --scenario=multi",
+    "e2e:live:all": "tsx --env-file=.env scripts/live-e2e.ts --scenario=all",
     "seed": "tsx scripts/seed.ts",
     "verify-fresh-clone": "bash scripts/verify-fresh-clone.sh"
   },

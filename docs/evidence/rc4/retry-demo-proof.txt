@@ -1,0 +1,13 @@
+======================================================================
+ PROVING PLAYWRIGHT PAGE.GOTO RETRY MECHANISM AND LOG OUTPUT
+======================================================================
+      [Navigation Timeout]: page.goto: Timeout 1500ms exceeded.
+Call log:
+  - navigating to "http://127.0.0.1:3991/", waiting until "domcontentloaded"
+, retrying navigation once...
+      [Navigation Retry 2/2]: Retrying PayPal approval page navigation...
+      Current URL: http://127.0.0.1:3991/
+      Page title:  PayPal Approval Simulation
+======================================================================
+ RESULT: Successfully verified retry execution and logging.
+======================================================================

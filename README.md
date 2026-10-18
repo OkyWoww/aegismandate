@@ -4,9 +4,10 @@
 > *Architectural Isolation, Deterministic Policy Gating, and Cryptographic Audit for Untrusted Autonomous Shopping Agents*
 
 [![CI / Static Checks](https://img.shields.io/badge/TypeScript-Strict%20Checked-blue?logo=typescript)](https://github.com/OkyWoww/mandatepay)
-[![Vitest Test Suite](https://img.shields.io/badge/Vitest-195%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
+[![Vitest Test Suite](https://img.shields.io/badge/Vitest-217%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
 [![Attack Suite](https://img.shields.io/badge/Attack%20Suite-12%2F12%20Blocked-success)](https://github.com/OkyWoww/mandatepay)
-[![PayPal Live Sandbox](https://img.shields.io/badge/PayPal%20Sandbox-Live%20Verified-003087?logo=paypal)](https://github.com/OkyWoww/mandatepay)
+[![PayPal Live Sandbox](https://img.shields.io/badge/PayPal%20Sandbox-20%2F20%20Gate%20Passed-003087?logo=paypal)](https://github.com/OkyWoww/mandatepay)
+[![Gitleaks](https://img.shields.io/badge/Gitleaks-0%20Leaks%20Found-brightgreen)](https://github.com/OkyWoww/mandatepay)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -24,7 +25,8 @@ Autonomous AI agents capable of browsing the web, selecting products, and comple
 3. **Cryptographic & Hash-Chained Audit Ledger**: Every mandate issuance, intent submission, policy decision, and PayPal capture is recorded into a tamper-evident, SHA-256 hash-chained SQLite ledger.
 
 > [!NOTE]
-> **Pre-Release Verification Disclosure**: As specified in [`tech.md §4.3`](docs/specs/tech.md), webhook signature verification against live PayPal endpoints is **NOT VERIFIED** (validated via mock verifier simulation). In-app live capture (`T-029`) requires payer browser approval and is not verified unattended.
+> **Pre-Release Verification Disclosure**: As specified in [`tech.md §4.3`](docs/specs/tech.md), webhook signature verification against live PayPal endpoints is **NOT VERIFIED** (validated via mock verifier simulation). In-app live capture (`T-029`) is verified live across 20 consecutive runs (100% pass on attempt-2) and 3 distinct scenarios (Single ALLOW, STEP_UP with cryptographic payload-hash binding, and Multi-item ALLOW).
+
 
 ---
 
@@ -322,7 +324,7 @@ aegismandate/
 | **T-017** | **Documentation Kit**   | 🟢 COMPLETED | Executive README, API reference ([`docs/api.md`](docs/api.md)), demo script ([`docs/demo-script.md`](docs/demo-script.md)) | `demo §2` |
 | **T-018** | **CI/CD & Quality Gates**| 🟢 COMPLETED | GitHub Actions 7-stage CI pipeline, frozen lockfile check, production build validation | `tech §2` |
 | **T-019** | **Submission & Release**| 🟢 COMPLETED | Codebase hygiene audit, live sandbox proof, tagged candidate release `v0.9.0-rc1` | `tasks T-019` |
-| **T-029** | **Live E2E Capture Runner**| Verified live (2 runs); 20-run gate pending (T-025) | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`) | `tech §4.3` |
+| **T-029** | **Live E2E Capture Runner**| 🟢 COMPLETED | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`). 20-run consecutive gate passed (attempt-2 100% pass), 3 distinct live scenarios verified (`single` ALLOW, `stepup` with cryptographic payload-hash binding, `multi` item ALLOW). | `tech §4.3` |
 
 ---
 
@@ -333,6 +335,11 @@ aegismandate/
 - `pnpm` (`npm install -g pnpm`)
 
 ### Option A: Automated One-Command Verification
+Validate fresh clone bootstrap and workspace boundaries:
+```bash
+pnpm verify-fresh-clone
+```
+
 Run the automated end-to-end smoke verification suite (seeds isolated ephemeral database, boots ephemeral server, runs 5 HTTP checks, verifies cryptographic hash chain, and cleans up):
 ```bash
 pnpm smoke
@@ -346,6 +353,13 @@ pnpm attack-suite
 Verify real PayPal Sandbox connectivity:
 ```bash
 pnpm test:live-paypal
+```
+
+Run live end-to-end sandbox purchase flows (with Playwright browser automation):
+```bash
+pnpm e2e:live          # Scenario 1: Single item in-mandate auto-approve ($9.00 Pen Pack)
+pnpm e2e:live:stepup   # Scenario 2: STEP_UP flow with payload-hash human authorization ($45.00 Desk Lamp)
+pnpm e2e:live:multi    # Scenario 3: Multi-item bundle auto-approve ($23.00 Pen Pack + Notebook)
 ```
 
 ### Option B: Interactive Local Demo Experience

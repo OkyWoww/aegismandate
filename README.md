@@ -190,6 +190,37 @@ Refund Link               : https://api.sandbox.paypal.com/v2/payments/captures/
 ================================================================================
 ```
 
+### 3.4 Automated Live E2E Verification Runner (`pnpm e2e:live` / Playwright)
+Automated end-to-end buyer authorization and settlement capture via headless Playwright against real PayPal Sandbox (`api-m.sandbox.paypal.com`):
+```bash
+pnpm e2e:live
+```
+```text
+================================================================================
+ LIVE E2E VERIFICATION COMPLETED (PASS)
+ Authentic Capture ID : 70A199539F894133Y
+ Audit Event Ref      : int_e2e_1792320187635
+ Audit Event (JSON)   :
+{
+  "seq": 9,
+  "ts": "2026-10-18T10:43:41.101Z",
+  "actor": "control_plane",
+  "type": "ORDER_CAPTURED",
+  "ref": "int_e2e_1792320187635",
+  "payload": {
+    "amount_minor": 900,
+    "capture_id": "70A199539F894133Y",
+    "currency": "USD",
+    "order_id": "5EA70665VU782662R",
+    "request_id": "req_capture_order_546a0bfd01668bf2dba2eac8",
+    "status": "COMPLETED"
+  },
+  "prev_hash": "da02ff6cb518cd1e871afc1a5a3e0d84007d343e22d345d1cbacd8bef8c5b437",
+  "hash": "40c8030c4c83a9c006a5ea8b1e38d46ee78591b68bf4a965b0061f892c501fb8"
+}
+================================================================================
+```
+
 ---
 
 ## 4. Verifiable Security Invariants Matrix (INV-1 to INV-12)
@@ -291,6 +322,7 @@ aegismandate/
 | **T-017** | **Documentation Kit**   | 🟢 COMPLETED | Executive README, API reference ([`docs/api.md`](docs/api.md)), demo script ([`docs/demo-script.md`](docs/demo-script.md)) | `demo §2` |
 | **T-018** | **CI/CD & Quality Gates**| 🟢 COMPLETED | GitHub Actions 7-stage CI pipeline, frozen lockfile check, production build validation | `tech §2` |
 | **T-019** | **Submission & Release**| 🟢 COMPLETED | Codebase hygiene audit, live sandbox proof, tagged candidate release `v0.9.0-rc1` | `tasks T-019` |
+| **T-029** | **Live E2E Capture Runner**| 🟢 COMPLETED | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`) | `tech §4.3` |
 
 ---
 

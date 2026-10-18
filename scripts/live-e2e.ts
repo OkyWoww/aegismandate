@@ -284,18 +284,45 @@ async function main() {
     console.log('[4/4] Verifying ORDER_CAPTURED row in cryptographic audit ledger...');
     const db = openDb(E2E_DB_PATH);
     const auditRow = db.prepare(
-      `SELECT * FROM audit_events WHERE ref = ? AND type = 'ORDER_CAPTURED'`,
-    ).get(propBody.intent_id) as { id: string; payload_json: string } | undefined;
+      `SELECT seq, ts, actor, type, ref, payload, prev_hash, hash FROM audit_events WHERE ref = ? AND type = 'ORDER_CAPTURED'`,
+    ).get(propBody.intent_id) as {
+      seq: number;
+      ts: string;
+      actor: string;
+      type: string;
+      ref: string;
+      payload: string;
+      prev_hash: string;
+      hash: string;
+    } | undefined;
     db.close();
 
     if (!auditRow) {
       throw new Error(`Missing ORDER_CAPTURED audit row for intent ${propBody.intent_id}`);
     }
 
+    let parsedPayload: unknown = auditRow.payload;
+    try {
+      parsedPayload = JSON.parse(auditRow.payload);
+    } catch {
+      // keep raw string
+    }
+
     console.log('='.repeat(80));
     console.log(' LIVE E2E VERIFICATION COMPLETED (PASS)');
     console.log(` Authentic Capture ID : ${capBody.capture_id}`);
     console.log(` Audit Event Ref      : ${propBody.intent_id}`);
+    console.log(' Audit Event (JSON)   :');
+    console.log(JSON.stringify({
+      seq: auditRow.seq,
+      ts: auditRow.ts,
+      actor: auditRow.actor,
+      type: auditRow.type,
+      ref: auditRow.ref,
+      payload: parsedPayload,
+      prev_hash: auditRow.prev_hash,
+      hash: auditRow.hash,
+    }, null, 2));
     console.log('='.repeat(80));
   } finally {
     await app.close();

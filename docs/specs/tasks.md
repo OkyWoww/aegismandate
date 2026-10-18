@@ -94,7 +94,7 @@ Estimates assume focused daily work. If other commitments overlap any phase, **c
 | Idempotent `ORDER_ALREADY_CAPTURED` reconcile & crash recovery | Hardened & verified (AC-14, FR-37) | Tested in `apps/api/src/executor-hardening.test.ts` |
 | STEP_UP semantics under Plan B (order withheld until owner confirms) | Hardened & verified (FR-38) | Tested in `apps/api/src/executor-hardening.test.ts` |
 | Smoke test Plan B alignment | Passed (stops cleanly at `AWAITING_PAYER_APPROVAL`, reservation HELD) | Raw `pnpm smoke` run |
-| Live E2E buyer approval & capture script | Implemented (`pnpm e2e:live`) | Reports `NOT RUN` when buyer credentials absent per Guardrail 6 |
+| Live E2E buyer approval & capture script (T-029) | Verified live against PayPal Sandbox | Playwright automated approval + real Capture ID (`70A199539F894133Y`) + `ORDER_CAPTURED` audit verified |
 | Docs consolidation (single `docs/specs/` source), README/demo/risk aligned to Plan B | Completed | Synchronized to Plan B |
 
 ## RC4 Backlog (Post-RC3 Hardening & Refinements)

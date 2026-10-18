@@ -66,12 +66,15 @@ export function initMandateTables(db: DatabaseConnection): void {
   `);
 }
 
-function withImmediateTransaction<T>(
+export function withImmediateTransaction<T>(
   db: DatabaseConnection,
   fn: () => T,
   maxRetries = 10,
   delayMs = 25,
 ): T {
+  if (db.isInTransaction()) {
+    return fn();
+  }
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       db.exec('BEGIN IMMEDIATE');
@@ -727,6 +730,16 @@ export class MandateService {
       };
     }
     return row;
+  }
+
+  /**
+   * Fetches a single reservation by intent_id.
+   */
+  public getReservation(intentId: string): MandateReservation | null {
+    const row = this.db
+      .prepare('SELECT id, mandate_id, intent_id, amount_minor, state, created_at, updated_at FROM reservations WHERE intent_id = ?')
+      .get(intentId) as MandateReservation | undefined;
+    return row ?? null;
   }
 
   /**

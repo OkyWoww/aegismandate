@@ -1,7 +1,7 @@
 {
   "name": "aegismandate",
   "private": true,
-  "version": "0.9.0-rc2",
+  "version": "0.9.0-rc3",
   "type": "module",
   "scripts": {
     "dev": "tsx scripts/dev.ts",
@@ -19,6 +19,7 @@
     "test:concurrency": "tsx scripts/concurrency-bench.ts",
     "attack-suite": "vitest run packages/sim",
     "smoke": "tsx scripts/smoke.ts",
+    "e2e:live": "tsx scripts/live-e2e.ts",
     "seed": "tsx scripts/seed.ts",
     "verify-fresh-clone": "bash scripts/verify-fresh-clone.sh"
   },

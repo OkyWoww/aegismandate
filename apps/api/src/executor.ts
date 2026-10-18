@@ -12,7 +12,8 @@ import {
   isMandateExpired,
   type PolicyEvaluationFacts,
 } from '@mandatepay/policy';
-import { MandateService } from './mandate-service.js';
+import { scanAdvisoryText } from '@mandatepay/scanner';
+import { MandateService, withImmediateTransaction } from './mandate-service.js';
 import type { PayPalClient, PayPalOrderResponse } from '@mandatepay/paypal';
 
 export interface StoreCatalogResolver {
@@ -67,6 +68,7 @@ export interface ApprovalPayload {
 interface ExecutedIntentRecord {
   intent_id: string;
   mandate_id: string;
+  merchant_ref?: string | null;
   verdict: string;
   decision_json: string;
   status: string;
@@ -74,6 +76,8 @@ interface ExecutedIntentRecord {
   capture_id: string | null;
   payload_hash: string | null;
   refusal_reason: string | null;
+  approve_url?: string | null;
+  expires_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -86,6 +90,7 @@ export function initExecutorTables(db: DatabaseConnection): void {
     CREATE TABLE IF NOT EXISTS executed_intents (
       intent_id TEXT PRIMARY KEY,
       mandate_id TEXT NOT NULL,
+      merchant_ref TEXT,
       verdict TEXT NOT NULL,
       decision_json TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -93,12 +98,167 @@ export function initExecutorTables(db: DatabaseConnection): void {
       capture_id TEXT,
       payload_hash TEXT,
       refusal_reason TEXT,
+      approve_url TEXT,
+      expires_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_exec_mandate ON executed_intents(mandate_id);
     CREATE INDEX IF NOT EXISTS idx_exec_status ON executed_intents(status);
+
+    CREATE TABLE IF NOT EXISTS orders (
+      order_id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL,
+      merchant_ref TEXT NOT NULL,
+      payee_ref TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_orders_intent ON orders(intent_id);
   `);
+  try {
+    db.exec('ALTER TABLE executed_intents ADD COLUMN approve_url TEXT;');
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE executed_intents ADD COLUMN expires_at TEXT;');
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE executed_intents ADD COLUMN merchant_ref TEXT;');
+  } catch {
+    // column already exists
+  }
+}
+
+/**
+ * Strict numeric epoch expiry comparator (NFR-6, AC-12).
+ * Replaces lexicographical ISO string comparisons.
+ * Fails closed (returns true) if either timestamp is NaN or unparseable.
+ */
+export function isExpiredEpoch(expiresAt: string | null | undefined, now: string): boolean {
+  if (!expiresAt) return false;
+  const expiryEpoch = Date.parse(expiresAt);
+  const nowEpoch = Date.parse(now);
+  if (Number.isNaN(expiryEpoch) || Number.isNaN(nowEpoch)) {
+    return true; // Fail closed if unparseable
+  }
+  return expiryEpoch <= nowEpoch;
+}
+
+/**
+ * Expiry Sweeper (FR-34, AC-12).
+ * Periodically transitions unapproved intents past payer_approval_timeout_seconds to EXPIRED,
+ * atomically releases reservations, and writes INTENT_EXPIRED audit events.
+ * Uses strict numeric epoch comparison (NFR-6).
+ */
+export function sweepExpiredIntents(
+  db: DatabaseConnection,
+  mandateService: MandateService,
+  now?: string,
+): string[] {
+  const currentNow = now ?? new Date().toISOString();
+  initExecutorTables(db);
+
+  const candidates = db
+    .prepare(
+      `SELECT intent_id, order_id, expires_at FROM executed_intents
+       WHERE status = 'AWAITING_PAYER_APPROVAL' AND expires_at IS NOT NULL`,
+    )
+    .all() as Array<{ intent_id: string; order_id: string | null; expires_at: string }>;
+
+  const expiredIds: string[] = [];
+
+  for (const candidate of candidates) {
+    if (!isExpiredEpoch(candidate.expires_at, currentNow)) {
+      continue;
+    }
+
+    withImmediateTransaction(db, () => {
+      const row = db
+        .prepare('SELECT status, expires_at, order_id FROM executed_intents WHERE intent_id = ?')
+        .get(candidate.intent_id) as { status: string; expires_at: string; order_id: string | null } | undefined;
+
+      if (!row || row.status !== 'AWAITING_PAYER_APPROVAL' || !isExpiredEpoch(row.expires_at, currentNow)) {
+        return; // Already processed or concurrent capture won
+      }
+
+      const res = mandateService.getReservation(candidate.intent_id);
+      if (res && res.state === 'HELD') {
+        mandateService.releaseReservation(candidate.intent_id, 'Approval timeout exceeded');
+      }
+
+      db.prepare(
+        "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'PAYER_APPROVAL_TIMEOUT', updated_at = ? WHERE intent_id = ?",
+      ).run(currentNow, candidate.intent_id);
+
+      appendAuditEvent(db, {
+        actor: 'control_plane',
+        type: 'INTENT_EXPIRED',
+        ref: candidate.intent_id,
+        payload: {
+          intent_id: candidate.intent_id,
+          order_id: row.order_id,
+          expires_at: row.expires_at,
+          expired_at: currentNow,
+        },
+        ts: currentNow,
+      });
+
+      expiredIds.push(candidate.intent_id);
+    });
+  }
+
+  return expiredIds;
+}
+
+/**
+ * Lazy check on intent/approve calls (FR-34, AC-12).
+ * If unapproved order has passed expires_at (epoch comparison), transitions to EXPIRED, releases reservation, and logs audit.
+ */
+export function checkAndExpireIntent(
+  db: DatabaseConnection,
+  mandateService: MandateService,
+  intentId: string,
+  now?: string,
+): boolean {
+  const currentNow = now ?? new Date().toISOString();
+  initExecutorTables(db);
+
+  return withImmediateTransaction(db, () => {
+    const row = db
+      .prepare('SELECT status, expires_at, order_id FROM executed_intents WHERE intent_id = ?')
+      .get(intentId) as { status: string; expires_at: string | null; order_id: string | null } | undefined;
+
+    if (!row || row.status !== 'AWAITING_PAYER_APPROVAL' || !row.expires_at || !isExpiredEpoch(row.expires_at, currentNow)) {
+      return false;
+    }
+
+    const res = mandateService.getReservation(intentId);
+    if (res && res.state === 'HELD') {
+      mandateService.releaseReservation(intentId, 'Approval timeout exceeded');
+    }
+
+    db.prepare(
+      "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'PAYER_APPROVAL_TIMEOUT', updated_at = ? WHERE intent_id = ?",
+    ).run(currentNow, intentId);
+
+    appendAuditEvent(db, {
+      actor: 'control_plane',
+      type: 'INTENT_EXPIRED',
+      ref: intentId,
+      payload: {
+        intent_id: intentId,
+        order_id: row.order_id,
+        expires_at: row.expires_at,
+        expired_at: currentNow,
+      },
+      ts: currentNow,
+    });
+
+    return true;
+  });
 }
 
 /**
@@ -294,11 +454,23 @@ export async function executeGoldenPath(
     }
   }
 
+  const pendingApprovalsCount = (
+    db.prepare(`
+      SELECT count(*) as count FROM executed_intents
+      WHERE mandate_id = ? AND verdict = 'STEP_UP' AND status IN ('PENDING_APPROVAL', 'APPROVED', 'AWAITING_PAYER_APPROVAL')
+    `).get(proposal.mandate_id) as { count: number } | undefined
+  )?.count ?? 0;
+
+  const textToScan = `${proposal.rationale ?? ''} ${proposal.user_goal_ref ?? ''}`;
+  const scanResult = scanAdvisoryText(textToScan);
+
   const facts: PolicyEvaluationFacts = {
     verifiedItems,
     verifiedTotalMinor,
     capturedMinor: spend.captured_minor,
     reservedMinor: spend.reserved_minor,
+    pendingApprovals: pendingApprovalsCount,
+    riskResult: { score: scanResult.risk_score, signals: scanResult.flags },
   };
 
   // --------------------------------------------------------------------------
@@ -406,11 +578,12 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
+      proposal.merchant_ref,
       'DENY',
       JSON.stringify(notFoundDecision),
       'DENIED',
@@ -469,11 +642,12 @@ export async function executeGoldenPath(
       if (!reserveRes.success || !reserveRes.reservation) {
         db.prepare(`
           INSERT INTO executed_intents (
-            intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           proposal.intent_id,
           proposal.mandate_id,
+          proposal.merchant_ref,
           'DENY',
           JSON.stringify(decision),
           'FAILED',
@@ -502,11 +676,12 @@ export async function executeGoldenPath(
     const endStatus = decision.verdict === 'STEP_UP' ? 'APPROVED' : 'DENIED';
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
+      proposal.merchant_ref,
       decision.verdict,
       JSON.stringify(decision),
       endStatus,
@@ -543,11 +718,12 @@ export async function executeGoldenPath(
   if (!reserveRes.success || !reserveRes.reservation) {
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
+      proposal.merchant_ref,
       'DENY',
       JSON.stringify(decision),
       'FAILED',
@@ -669,11 +845,12 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
+      proposal.merchant_ref,
       'DENY',
       JSON.stringify(decision),
       'FAILED',
@@ -709,7 +886,6 @@ export async function executeGoldenPath(
   }));
 
   const createRequestId = generatePayPalRequestId(proposal.intent_id, 'create_order');
-  const captureRequestId = generatePayPalRequestId(proposal.intent_id, 'capture_order');
 
   let orderResponse: PayPalOrderResponse;
   try {
@@ -740,11 +916,12 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
+      proposal.merchant_ref,
       'DENY',
       JSON.stringify(decision),
       'FAILED',
@@ -786,57 +963,54 @@ export async function executeGoldenPath(
   });
 
   // --------------------------------------------------------------------------
-  // 9. Order Capture & Settlement (FR-15, FR-26)
+  // 9. Plan B Order State & Reservation (FR-33, FR-34)
   // --------------------------------------------------------------------------
-  let captureId: string;
-  try {
-    const captureResponse = await withExponentialBackoff(
-      async () =>
-        payPalClient.captureOrder(orderResponse.id, captureRequestId),
-      params.retryConfig,
-    );
-    captureId = captureResponse.id;
-  } catch {
-    // Under Plan B authorization, if order is created with approval link,
-    // simulated capture completes the pre-authorized golden path.
-    captureId = `cap_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
-  }
+  const timeoutSeconds = freshMandate.payer_approval_timeout_seconds ?? 900;
+  const expiresAt = new Date(new Date(now).getTime() + timeoutSeconds * 1000).toISOString();
+  const approveUrl = orderResponse.links?.find((l) => l.rel === 'approve')?.href;
 
-  // Record ORDER_CAPTURED into audit ledger with authentic PayPal Capture ID
   appendAuditEvent(db, {
     actor: 'control_plane',
-    type: 'ORDER_CAPTURED',
+    type: 'AWAITING_PAYER_APPROVAL',
     ref: proposal.intent_id,
     payload: {
       order_id: orderResponse.id,
-      capture_id: captureId,
-      amount_minor: verifiedTotalMinor,
-      currency: proposal.currency,
-      payee_ref: payee?.payeeRef ?? 'default',
-      status: 'COMPLETED',
-      request_id: captureRequestId,
+      approve_url: approveUrl,
+      expires_at: expiresAt,
+      reservation_state: 'HELD',
     },
     ts: now,
   });
 
-  // Shift reserved budget to captured budget
-  mandateService.captureReservation(proposal.intent_id, verifiedTotalMinor);
-
   db.prepare(`
     INSERT INTO executed_intents (
-      intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, approve_url, expires_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     proposal.intent_id,
     proposal.mandate_id,
+    proposal.merchant_ref,
     'ALLOW',
     JSON.stringify(decision),
-    'CAPTURED',
+    'AWAITING_PAYER_APPROVAL',
     orderResponse.id,
-    captureId,
+    null,
     computedPayloadHash,
     null,
+    approveUrl ?? null,
+    expiresAt,
     now,
+    now,
+  );
+
+  db.prepare(`
+    INSERT OR REPLACE INTO orders (order_id, intent_id, merchant_ref, payee_ref, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    orderResponse.id,
+    proposal.intent_id,
+    proposal.merchant_ref,
+    payee?.payeeRef ?? '',
     now,
   );
 
@@ -852,12 +1026,518 @@ export async function executeGoldenPath(
     decision,
     reservation: reserveRes.reservation,
     orderId: orderResponse.id,
-    captureId,
-    approveUrl: orderResponse.links?.find((l) => l.rel === 'approve')?.href,
-    status: 'CAPTURED',
+    approveUrl,
+    status: 'AWAITING_PAYER_APPROVAL',
     auditEventsCount: finalAudit.count,
     auditValid: finalAudit.valid,
   };
+}
+
+export interface CaptureApprovedOrderParams {
+  intentId: string;
+  payPalClient: PayPalClient;
+  mandateService: MandateService;
+  catalogResolver: StoreCatalogResolver;
+  db: DatabaseConnection;
+  now?: string | undefined;
+  retryConfig?: RetryOptions | undefined;
+}
+
+export interface CaptureApprovedOrderResult {
+  intentId: string;
+  orderId?: string | undefined;
+  captureId?: string | undefined;
+  status: 'CAPTURED' | 'FAILED' | 'EXPIRED' | 'AWAITING_PAYER_APPROVAL' | 'CAPTURING';
+  refusalReason?: string | undefined;
+}
+
+/**
+ * Single authoritative capture function (Guardrail 2, FR-34, FR-35, FR-37, AC-12, AC-13, AC-14).
+ * ALL capture pathways (approve endpoint, webhook, polling, startup reconcile) MUST route through this function.
+ * 
+ * Guarantees:
+ * 1. Atomically flips status to CAPTURING inside BEGIN IMMEDIATE after asserting reservation is HELD and not expired.
+ * 2. Zero PayPal calls inside SQLite transactions.
+ * 3. Pre-capture preflight asserts order status, reference_id, amount/currency, payee, and payer_binding.
+ * 4. Refuses capture with zero captureOrder calls if preflight fails, order unapproved, or expired.
+ * 5. Uses deterministic PayPal-Request-Id.
+ * 6. Handles ORDER_ALREADY_CAPTURED error by querying GET order and recording reconciled state.
+ */
+export async function captureApprovedOrder(
+  params: CaptureApprovedOrderParams,
+): Promise<CaptureApprovedOrderResult> {
+  const { intentId, payPalClient, mandateService, catalogResolver, db } = params;
+  const now = params.now ?? new Date().toISOString();
+
+  initExecutorTables(db);
+
+  // STEP A: Atomic validation and status transition to CAPTURING inside BEGIN IMMEDIATE transaction
+  const preCheck = withImmediateTransaction(db, () => {
+    const row = db
+      .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
+      .get(intentId) as ExecutedIntentRecord | undefined;
+
+    if (!row) {
+      return { ok: false, status: 'FAILED' as const, reason: 'INTENT_NOT_FOUND' };
+    }
+
+    if (row.status === 'CAPTURED') {
+      return {
+        ok: true,
+        alreadyCaptured: true,
+        status: 'CAPTURED' as const,
+        orderId: row.order_id ?? undefined,
+        captureId: row.capture_id ?? undefined,
+      };
+    }
+
+    // Lazy check on approval TTL with numeric epoch comparison (FR-34, AC-12, NFR-6)
+    if (row.expires_at && isExpiredEpoch(row.expires_at, now)) {
+      if (row.status !== 'EXPIRED') {
+        const res = mandateService.getReservation(intentId);
+        if (res && res.state === 'HELD') {
+          mandateService.releaseReservation(intentId, 'Approval timeout exceeded');
+        }
+        db.prepare(
+          "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'PAYER_APPROVAL_TIMEOUT', updated_at = ? WHERE intent_id = ?",
+        ).run(now, intentId);
+        appendAuditEvent(db, {
+          actor: 'control_plane',
+          type: 'INTENT_EXPIRED',
+          ref: intentId,
+          payload: {
+            intent_id: intentId,
+            order_id: row.order_id,
+            expires_at: row.expires_at,
+            expired_at: now,
+          },
+          ts: now,
+        });
+      }
+      return { ok: false, status: 'EXPIRED' as const, reason: 'PAYER_APPROVAL_TIMEOUT' };
+    }
+
+    if (row.status === 'EXPIRED') {
+      return { ok: false, status: 'EXPIRED' as const, reason: 'PAYER_APPROVAL_TIMEOUT' };
+    }
+
+    if (row.status === 'FAILED' || row.status === 'DENIED' || row.status === 'REJECTED') {
+      return { ok: false, status: 'FAILED' as const, reason: row.refusal_reason ?? row.status };
+    }
+
+    if (!row.order_id) {
+      return { ok: false, status: 'FAILED' as const, reason: 'NO_ORDER_ID' };
+    }
+
+    // Assert reservation is HELD before allowing capture (FR-34, AC-12, INV-7)
+    const reservation = mandateService.getReservation(intentId);
+    if (!reservation || reservation.state !== 'HELD') {
+      return { ok: false, status: 'FAILED' as const, reason: 'RESERVATION_NOT_HELD' };
+    }
+
+    // Resolve merchant_ref deterministically from server-side intent / orders record (INV-2)
+    let merchantRef = row.merchant_ref;
+    if (!merchantRef && row.order_id) {
+      const orderRow = db
+        .prepare('SELECT merchant_ref FROM orders WHERE order_id = ?')
+        .get(row.order_id) as { merchant_ref: string } | undefined;
+      if (orderRow) merchantRef = orderRow.merchant_ref;
+    }
+    if (!merchantRef) {
+      const orderRow = db
+        .prepare('SELECT merchant_ref FROM orders WHERE intent_id = ?')
+        .get(intentId) as { merchant_ref: string } | undefined;
+      if (orderRow) merchantRef = orderRow.merchant_ref;
+    }
+
+    // Atomically flip intent status to CAPTURING inside BEGIN IMMEDIATE transaction (FR-34)
+    db.prepare(
+      "UPDATE executed_intents SET status = 'CAPTURING', updated_at = ? WHERE intent_id = ?",
+    ).run(now, intentId);
+
+    return {
+      ok: true,
+      alreadyCaptured: false,
+      status: 'CAPTURING' as const,
+      orderId: row.order_id,
+      mandateId: row.mandate_id,
+      amountMinor: reservation.amount_minor,
+      merchantRef: merchantRef ?? undefined,
+    };
+  });
+
+  if (!preCheck.ok) {
+    return {
+      intentId,
+      status: preCheck.status,
+      refusalReason: preCheck.reason,
+    };
+  }
+
+  if (preCheck.alreadyCaptured) {
+    return {
+      intentId,
+      orderId: preCheck.orderId,
+      captureId: preCheck.captureId,
+      status: 'CAPTURED',
+    };
+  }
+
+  const targetOrderId = preCheck.orderId!;
+  const mandateId = preCheck.mandateId!;
+  const verifiedTotalMinor = preCheck.amountMinor!;
+  const merchantRef = preCheck.merchantRef;
+  const mandate = mandateService.getMandate(mandateId);
+
+  try {
+    // STEP B: Outside transaction — Pre-capture preflight against PayPal (FR-35, AC-13)
+    let fetchedOrder: PayPalOrderResponse;
+    try {
+      fetchedOrder = await payPalClient.getOrder(targetOrderId);
+    } catch (err: unknown) {
+      // Prevent stuck CAPTURING: Network or 5xx error on initial getOrder transitions to FAILED and releases reservation atomically
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      withImmediateTransaction(db, () => {
+        mandateService.releaseReservation(intentId, `PayPal getOrder failed: ${errorMsg}`);
+        appendAuditEvent(db, {
+          actor: 'control_plane',
+          type: 'ORDER_FAILED',
+          ref: intentId,
+          payload: { error: errorMsg, stage: 'preflight_get_order', order_id: targetOrderId },
+          ts: now,
+        });
+        db.prepare(
+          "UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'GET_ORDER_FAILED', updated_at = ? WHERE intent_id = ?",
+        ).run(now, intentId);
+      });
+      return {
+        intentId,
+        orderId: targetOrderId,
+        status: 'FAILED',
+        refusalReason: `GET_ORDER_FAILED: ${errorMsg}`,
+      };
+    }
+
+    // If order status is CREATED, order is still awaiting buyer approval (Plan B lifecycle)
+    if (fetchedOrder.status === 'CREATED') {
+      withImmediateTransaction(db, () => {
+        db.prepare(
+          "UPDATE executed_intents SET status = 'AWAITING_PAYER_APPROVAL', updated_at = ? WHERE intent_id = ? AND status = 'CAPTURING'",
+        ).run(now, intentId);
+      });
+      return {
+        intentId,
+        orderId: targetOrderId,
+        status: 'AWAITING_PAYER_APPROVAL',
+        refusalReason: 'ORDER_NOT_YET_APPROVED',
+      };
+    }
+
+    // Strict Fail-Closed Preflight Assertions (FR-35, INV-6, INV-7)
+    // In captureApprovedOrder, reference_id, amount.value, amount.currency_code, and payee MUST all be present and strictly match expected server values.
+    // If ANY field is missing or undefined -> immediately fail with PREFLIGHT_VALIDATION_FAILED, release reservation, write audit event, and make ZERO captureOrder calls.
+    try {
+      if (fetchedOrder.status !== 'APPROVED' && fetchedOrder.status !== 'COMPLETED') {
+        throw new Error(`Order preflight failed: status '${fetchedOrder.status}' is not APPROVED or COMPLETED`);
+      }
+
+      const purchaseUnit = fetchedOrder.purchase_units?.[0];
+      if (!purchaseUnit) {
+        throw new Error('Order preflight failed: missing purchase_units[0]');
+      }
+
+      // 1. reference_id MUST be present and strictly match intent_id
+      if (!purchaseUnit.reference_id) {
+        throw new Error('Order preflight failed: missing reference_id in purchase unit');
+      }
+      if (purchaseUnit.reference_id !== intentId) {
+        throw new Error(`Order preflight failed: reference_id '${purchaseUnit.reference_id}' !== intent '${intentId}'`);
+      }
+
+      // 2. amount.value and amount.currency_code MUST be present and strictly match expected server values
+      if (!purchaseUnit.amount || !purchaseUnit.amount.value || !purchaseUnit.amount.currency_code) {
+        throw new Error('Order preflight failed: missing amount, amount.value, or amount.currency_code');
+      }
+      const expectedCurrency = mandate?.currency ?? 'USD';
+      if (purchaseUnit.amount.currency_code !== expectedCurrency) {
+        throw new Error(`Order preflight failed: currency '${purchaseUnit.amount.currency_code}' !== '${expectedCurrency}'`);
+      }
+      const parsedAmountVal = parseFloat(purchaseUnit.amount.value);
+      if (Number.isNaN(parsedAmountVal)) {
+        throw new Error(`Order preflight failed: amount value '${purchaseUnit.amount.value}' is not a valid number`);
+      }
+      const fetchedAmountMinor = Math.round(parsedAmountVal * 100);
+      if (fetchedAmountMinor !== verifiedTotalMinor) {
+        throw new Error(`Order preflight failed: amount ${fetchedAmountMinor} !== verified total ${verifiedTotalMinor}`);
+      }
+
+      // 3. Resolve expected payee deterministically from server-side intents/orders -> merchants registry table (INV-2)
+      // NEVER parse historical INTENT_RECEIVED audit log payloads. If merchant/payee lookup fails -> fail closed.
+      if (!merchantRef) {
+        throw new Error(`Order preflight failed: unable to resolve merchant_ref from server-side intent/order record for intent '${intentId}'`);
+      }
+      const expectedPayee = catalogResolver.getMerchantPayee(merchantRef);
+      if (!expectedPayee || !expectedPayee.payeeRef) {
+        throw new Error(`Order preflight failed: merchant '${merchantRef}' not found in server payee registry`);
+      }
+      const expectedPayeeRef = expectedPayee.payeeRef;
+
+      // payee MUST be present and strictly match expected server payee
+      if (!purchaseUnit.payee || !purchaseUnit.payee.email_address) {
+        throw new Error('Order preflight failed: missing payee or payee.email_address in purchase unit');
+      }
+      if (purchaseUnit.payee.email_address !== expectedPayeeRef) {
+        throw new Error(`Order preflight failed: payee '${purchaseUnit.payee.email_address}' !== registry '${expectedPayeeRef}'`);
+      }
+
+      // 4. Payer binding check (spec.md §3.1)
+      if (mandate?.payer_binding?.payer_id) {
+        const payerId = fetchedOrder.payer?.payer_id;
+        if (!payerId || payerId !== mandate.payer_binding.payer_id) {
+          throw new Error(`Order preflight failed: payer_id '${payerId}' !== bound payer '${mandate.payer_binding.payer_id}'`);
+        }
+      }
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      withImmediateTransaction(db, () => {
+        mandateService.releaseReservation(intentId, `Preflight validation failed: ${errorMsg}`);
+        appendAuditEvent(db, {
+          actor: 'control_plane',
+          type: 'ORDER_PREFLIGHT_FAILED',
+          ref: intentId,
+          payload: { error: errorMsg, order_id: targetOrderId, reason: 'PREFLIGHT_VALIDATION_FAILED' },
+          ts: now,
+        });
+        db.prepare(
+          "UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PREFLIGHT_VALIDATION_FAILED', updated_at = ? WHERE intent_id = ?",
+        ).run(now, intentId);
+      });
+      return {
+        intentId,
+        orderId: targetOrderId,
+        status: 'FAILED',
+        refusalReason: 'PREFLIGHT_VALIDATION_FAILED',
+      };
+    }
+
+    // STEP C: Capture Execution with Deterministic Request-Id (FR-14, FR-37, AC-14)
+    const captureRequestId = generatePayPalRequestId(intentId, 'capture_order');
+    let captureId: string;
+
+    if (fetchedOrder.status === 'COMPLETED') {
+      // Order is already COMPLETED on PayPal (reconciliation recovery)
+      // Extract authentic capture ID strictly from purchase_units[0].payments.captures[0].id (NO fallbacks)
+      const authenticCaptureId = fetchedOrder.purchase_units?.[0]?.payments?.captures?.[0]?.id;
+      if (!authenticCaptureId) {
+        withImmediateTransaction(db, () => {
+          mandateService.releaseReservation(intentId, 'COMPLETED order has no authentic capture ID in purchase_units[0].payments.captures[0].id');
+          appendAuditEvent(db, {
+            actor: 'control_plane',
+            type: 'ORDER_FAILED',
+            ref: intentId,
+            payload: { error: 'COMPLETED order missing authentic capture ID', order_id: targetOrderId },
+            ts: now,
+          });
+          db.prepare(
+            "UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'MISSING_AUTHENTIC_CAPTURE_ID', updated_at = ? WHERE intent_id = ?",
+          ).run(now, intentId);
+        });
+        return {
+          intentId,
+          orderId: targetOrderId,
+          status: 'FAILED',
+          refusalReason: 'MISSING_AUTHENTIC_CAPTURE_ID',
+        };
+      }
+      captureId = authenticCaptureId;
+    } else {
+      try {
+        const captureResponse = await withExponentialBackoff(
+          async () => payPalClient.captureOrder(targetOrderId, captureRequestId),
+          params.retryConfig,
+        );
+        const authenticCaptureId = captureResponse.purchase_units?.[0]?.payments?.captures?.[0]?.id;
+        if (!authenticCaptureId) {
+          throw new Error('Capture response missing authentic captures[0].id');
+        }
+        captureId = authenticCaptureId;
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (/ORDER_ALREADY_CAPTURED/i.test(errMsg)) {
+          // FR-37, AC-14: Query GET order, verify reference_id == intent_id and amount/currency, record capture state + audit event if missing
+          // Wrapped inside try/catch so exceptions never leave an intent stuck in CAPTURING
+          try {
+            const reconciledOrder = await payPalClient.getOrder(targetOrderId);
+            const pUnit = reconciledOrder.purchase_units?.[0];
+            if (!pUnit || !pUnit.reference_id || pUnit.reference_id !== intentId) {
+              throw new Error(`Reconciliation mismatch: reference_id '${pUnit?.reference_id}' !== intent '${intentId}'`);
+            }
+            if (!pUnit.amount || !pUnit.amount.value || !pUnit.amount.currency_code) {
+              throw new Error('Reconciliation mismatch: missing amount in reconciled order');
+            }
+            const expectedCurrency = mandate?.currency ?? 'USD';
+            if (pUnit.amount.currency_code !== expectedCurrency) {
+              throw new Error(`Reconciliation mismatch: currency '${pUnit.amount.currency_code}' !== '${expectedCurrency}'`);
+            }
+            const parsedAmountMinor = Math.round(parseFloat(pUnit.amount.value) * 100);
+            if (Number.isNaN(parsedAmountMinor) || parsedAmountMinor !== verifiedTotalMinor) {
+              throw new Error(`Reconciliation mismatch: amount ${parsedAmountMinor} !== verified total ${verifiedTotalMinor}`);
+            }
+
+            // Extract the authentic capture ID strictly from purchase_units[0].payments.captures[0].id.
+            // STRICTLY FORBIDDEN: Never use || reconciledOrder.id or || order.id as a fallback for capture_id.
+            const authenticId = pUnit.payments?.captures?.[0]?.id;
+            if (!authenticId) {
+              throw new Error('Reconciliation error: missing authentic captures[0].id in reconciled order');
+            }
+            captureId = authenticId;
+          } catch (recErr: unknown) {
+            const recMsg = recErr instanceof Error ? recErr.message : String(recErr);
+            withImmediateTransaction(db, () => {
+              mandateService.releaseReservation(intentId, `Reconciliation failed: ${recMsg}`);
+              appendAuditEvent(db, {
+                actor: 'control_plane',
+                type: 'ORDER_FAILED',
+                ref: intentId,
+                payload: { error: recMsg, request_id: captureRequestId, stage: 'reconciliation' },
+                ts: now,
+              });
+              db.prepare(
+                "UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'RECONCILIATION_FAILED', updated_at = ? WHERE intent_id = ?",
+              ).run(now, intentId);
+            });
+            return {
+              intentId,
+              orderId: targetOrderId,
+              status: 'FAILED',
+              refusalReason: 'RECONCILIATION_FAILED',
+            };
+          }
+        } else {
+          withImmediateTransaction(db, () => {
+            mandateService.releaseReservation(intentId, `PayPal capture failed: ${errMsg}`);
+            appendAuditEvent(db, {
+              actor: 'control_plane',
+              type: 'ORDER_FAILED',
+              ref: intentId,
+              payload: { error: errMsg, request_id: captureRequestId, stage: 'capture' },
+              ts: now,
+            });
+            db.prepare(
+              "UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'CAPTURE_FAILED', updated_at = ? WHERE intent_id = ?",
+            ).run(now, intentId);
+          });
+          return {
+            intentId,
+            orderId: targetOrderId,
+            status: 'FAILED',
+            refusalReason: 'CAPTURE_FAILED',
+          };
+        }
+      }
+    }
+
+    // STEP D: Atomic Settlement & Audit Logging (INV-8, INV-9)
+    withImmediateTransaction(db, () => {
+      mandateService.captureReservation(intentId, verifiedTotalMinor);
+
+      const existingAudit = db
+        .prepare("SELECT seq FROM audit_events WHERE ref = ? AND type = 'ORDER_CAPTURED'")
+        .get(intentId) as { seq: number } | undefined;
+
+      if (!existingAudit) {
+        appendAuditEvent(db, {
+          actor: 'control_plane',
+          type: 'ORDER_CAPTURED',
+          ref: intentId,
+          payload: {
+            order_id: targetOrderId,
+            capture_id: captureId,
+            amount_minor: verifiedTotalMinor,
+            currency: mandate?.currency ?? 'USD',
+            status: 'COMPLETED',
+            request_id: captureRequestId,
+          },
+          ts: now,
+        });
+      }
+
+      db.prepare(`
+        UPDATE executed_intents
+        SET status = 'CAPTURED', order_id = ?, capture_id = ?, refusal_reason = NULL, updated_at = ?
+        WHERE intent_id = ?
+      `).run(targetOrderId, captureId, now, intentId);
+    });
+
+    return {
+      intentId,
+      orderId: targetOrderId,
+      captureId,
+      status: 'CAPTURED',
+    };
+  } catch (unhandledErr: unknown) {
+    // Prevent Stuck CAPTURING States:
+    // If ANY unhandled error escapes, ensure intent does not remain stranded in CAPTURING.
+    const unhandledMsg = unhandledErr instanceof Error ? unhandledErr.message : String(unhandledErr);
+    withImmediateTransaction(db, () => {
+      const cur = db
+        .prepare('SELECT status FROM executed_intents WHERE intent_id = ?')
+        .get(intentId) as { status: string } | undefined;
+      if (cur && cur.status === 'CAPTURING') {
+        mandateService.releaseReservation(intentId, `Unhandled error during capture: ${unhandledMsg}`);
+        appendAuditEvent(db, {
+          actor: 'control_plane',
+          type: 'ORDER_FAILED',
+          ref: intentId,
+          payload: { error: unhandledMsg, stage: 'capturing_abort' },
+          ts: now,
+        });
+        db.prepare(
+          "UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'CAPTURE_FAILED', updated_at = ? WHERE intent_id = ?",
+        ).run(now, intentId);
+      }
+    });
+    return {
+      intentId,
+      orderId: targetOrderId,
+      status: 'FAILED',
+      refusalReason: `CAPTURE_FAILED: ${unhandledMsg}`,
+    };
+  }
+}
+
+/**
+ * Startup Reconcile for in-flight CAPTURING intents (FR-37, crash-after-capture recovery).
+ */
+export async function reconcileCapturingIntents(params: {
+  db: DatabaseConnection;
+  payPalClient: PayPalClient;
+  mandateService: MandateService;
+  catalogResolver: StoreCatalogResolver;
+  now?: string | undefined;
+}): Promise<string[]> {
+  const { db, payPalClient, mandateService, catalogResolver } = params;
+  initExecutorTables(db);
+
+  const rows = db
+    .prepare("SELECT intent_id FROM executed_intents WHERE status = 'CAPTURING'")
+    .all() as Array<{ intent_id: string }>;
+
+  const reconciled: string[] = [];
+  for (const row of rows) {
+    const res = await captureApprovedOrder({
+      intentId: row.intent_id,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      now: params.now,
+    });
+    if (res.status === 'CAPTURED') {
+      reconciled.push(row.intent_id);
+    }
+  }
+  return reconciled;
 }
 
 export interface PollOrderStatusParams {
@@ -865,6 +1545,7 @@ export interface PollOrderStatusParams {
   orderId: string;
   payPalClient: PayPalClient;
   mandateService: MandateService;
+  catalogResolver?: StoreCatalogResolver | undefined;
   db: DatabaseConnection;
   now?: string | undefined;
 }
@@ -879,6 +1560,7 @@ export interface PollOrderStatusResult {
 
 /**
  * Polling fallback mechanism for reconciling PayPal order state when webhooks are delayed or absent (tech.md §4.5).
+ * Routes through the authoritative captureApprovedOrder function when order is approved or completed.
  */
 export async function pollOrderStatus(params: PollOrderStatusParams): Promise<PollOrderStatusResult> {
   const { intentId, orderId, payPalClient, mandateService, db } = params;
@@ -890,20 +1572,39 @@ export async function pollOrderStatus(params: PollOrderStatusParams): Promise<Po
   let reconciled = false;
   let settled = false;
 
-  if (order.status === 'COMPLETED') {
-    const row = db
-      .prepare('SELECT status FROM executed_intents WHERE intent_id = ?')
-      .get(intentId) as { status: string } | undefined;
-
-    if (row && row.status !== 'CAPTURED') {
-      const res = db
-        .prepare('SELECT amount_minor FROM reservations WHERE intent_id = ?')
-        .get(intentId) as { amount_minor: number } | undefined;
-
-      if (res) {
-        mandateService.captureReservation(intentId, res.amount_minor);
-      }
-      db.prepare("UPDATE executed_intents SET status = 'CAPTURED', updated_at = ? WHERE intent_id = ?").run(
+  if (order.status === 'APPROVED' || order.status === 'COMPLETED') {
+    const defaultCatalogResolver: StoreCatalogResolver = params.catalogResolver ?? {
+      getMerchantPayee: () => null,
+      getItem: () => null,
+    };
+    const capRes = await captureApprovedOrder({
+      intentId,
+      payPalClient,
+      mandateService,
+      catalogResolver: defaultCatalogResolver,
+      db,
+      now,
+    });
+    if (capRes.status === 'CAPTURED') {
+      reconciled = true;
+      settled = true;
+      appendAuditEvent(db, {
+        actor: 'control_plane',
+        type: 'POLLING_RECONCILED',
+        ref: intentId,
+        payload: {
+          order_id: orderId,
+          paypal_status: order.status,
+          reconciled_to: 'CAPTURED',
+          capture_id: capRes.captureId,
+        },
+        ts: now,
+      });
+    }
+  } else if (order.status === 'VOIDED') {
+    withImmediateTransaction(db, () => {
+      mandateService.releaseReservation(intentId, 'PayPal order voided detected via polling');
+      db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'ORDER_VOIDED', updated_at = ? WHERE intent_id = ?").run(
         now,
         intentId,
       );
@@ -914,29 +1615,10 @@ export async function pollOrderStatus(params: PollOrderStatusParams): Promise<Po
         payload: {
           order_id: orderId,
           paypal_status: order.status,
-          reconciled_to: 'CAPTURED',
+          reconciled_to: 'VOIDED',
         },
         ts: now,
       });
-      reconciled = true;
-      settled = true;
-    }
-  } else if (order.status === 'VOIDED') {
-    mandateService.releaseReservation(intentId, 'PayPal order voided detected via polling');
-    db.prepare("UPDATE executed_intents SET status = 'FAILED', updated_at = ? WHERE intent_id = ?").run(
-      now,
-      intentId,
-    );
-    appendAuditEvent(db, {
-      actor: 'control_plane',
-      type: 'POLLING_RECONCILED',
-      ref: intentId,
-      payload: {
-        order_id: orderId,
-        paypal_status: order.status,
-        reconciled_to: 'VOIDED',
-      },
-      ts: now,
     });
     reconciled = true;
   }
@@ -966,7 +1648,7 @@ export interface ExecuteApprovedStepUpResult {
   intentId: string;
   mandateId: string;
   verdict: 'ALLOW' | 'STEP_UP' | 'DENY';
-  status: 'CAPTURED' | 'FAILED' | 'APPROVED' | 'AWAITING_PAYER_APPROVAL';
+  status: 'CAPTURED' | 'FAILED' | 'APPROVED' | 'AWAITING_PAYER_APPROVAL' | 'EXPIRED' | 'CAPTURING';
   orderId?: string | undefined;
   captureId?: string | undefined;
   approveUrl?: string | undefined;
@@ -1183,15 +1865,15 @@ export async function executeApprovedStepUp(
   }));
 
   const createRequestId = generatePayPalRequestId(intentId, 'create_order_approved');
-  const captureRequestId = generatePayPalRequestId(intentId, 'capture_order_approved');
 
   // Priority 1: Prevent Order Substitution Vulnerability.
   // The executor strictly reads targetOrderId from database (row.order_id), never from client input.
   let targetOrderId = row.order_id;
 
   if (!targetOrderId) {
+    let orderResponse: PayPalOrderResponse;
     try {
-      const orderResponse = await createMandatePayPalOrder({
+      orderResponse = await createMandatePayPalOrder({
         payPalClient,
         intentId,
         currency: proposal.currency,
@@ -1242,141 +1924,66 @@ export async function executeApprovedStepUp(
         auditValid: vRes.valid,
       };
     }
-  }
+    const approveUrl = orderResponse.links?.find((l) => l.rel === 'approve')?.href;
+    const timeoutSeconds = freshMandate.payer_approval_timeout_seconds ?? 900;
+    const expiresAt = new Date(new Date(now).getTime() + timeoutSeconds * 1000).toISOString();
 
-  // Pre-Flight Pre-Capture Validation against PayPal Orders v2 (Priority 1: Order Substitution Prevention)
-  try {
-    const fetchedOrder = await payPalClient.getOrder(targetOrderId);
+    db.prepare(`
+      UPDATE executed_intents
+      SET status = 'AWAITING_PAYER_APPROVAL', order_id = ?, approve_url = ?, expires_at = ?, updated_at = ?
+      WHERE intent_id = ?
+    `).run(targetOrderId, approveUrl ?? null, expiresAt, now, intentId);
 
-    // (a) If status is CREATED, order is awaiting payer approval on PayPal (Plan B lifecycle)
-    if (fetchedOrder.status === 'CREATED') {
-      const approveUrl = fetchedOrder.links?.find((l) => l.rel === 'approve')?.href;
-      db.prepare(`
-        UPDATE executed_intents
-        SET status = 'AWAITING_PAYER_APPROVAL', order_id = ?, updated_at = ?
-        WHERE intent_id = ?
-      `).run(targetOrderId, now, intentId);
+    db.prepare(`
+      INSERT OR REPLACE INTO orders (order_id, intent_id, merchant_ref, payee_ref, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(targetOrderId, intentId, proposal.merchant_ref, payee.payeeRef, now);
 
-      appendAuditEvent(db, {
-        actor: 'control_plane',
-        type: 'AWAITING_PAYER_APPROVAL',
-        ref: intentId,
-        payload: {
-          order_id: targetOrderId,
-          status: 'CREATED',
-          approve_url: approveUrl,
-        },
-        ts: now,
-      });
-
-      const vRes = verifyAuditLedger(db);
-      return {
-        intentId,
-        mandateId: proposal.mandate_id,
-        verdict: 'ALLOW',
-        status: 'AWAITING_PAYER_APPROVAL',
-        orderId: targetOrderId,
-        approveUrl,
-        auditValid: vRes.valid,
-      };
-    }
-
-    // Status must be APPROVED for immediate capture
-    if (fetchedOrder.status !== 'APPROVED') {
-      throw new Error(`Order pre-flight validation failed: status is '${fetchedOrder.status}' (expected 'APPROVED')`);
-    }
-
-    // (b) Custom/Reference ID must match intent_id
-    const purchaseUnit = fetchedOrder.purchase_units?.[0];
-    const fetchedRefId = purchaseUnit?.reference_id ?? purchaseUnit?.custom_id;
-    if (fetchedRefId && fetchedRefId !== intentId) {
-      throw new Error(`Order pre-flight validation failed: reference_id '${fetchedRefId}' does not match intent '${intentId}'`);
-    }
-
-    // (c) Amount and currency must match verified intent totals
-    if (purchaseUnit?.amount) {
-      if (purchaseUnit.amount.currency_code !== proposal.currency) {
-        throw new Error(`Order pre-flight validation failed: currency '${purchaseUnit.amount.currency_code}' does not match '${proposal.currency}'`);
-      }
-      const fetchedAmountMinor = Math.round(parseFloat(purchaseUnit.amount.value) * 100);
-      if (fetchedAmountMinor !== verifiedTotalMinor) {
-        throw new Error(`Order pre-flight validation failed: amount ${fetchedAmountMinor} does not match verified total ${verifiedTotalMinor}`);
-      }
-    }
-
-    // (d) Payee must match server-side merchant registry (INV-2)
-    if (purchaseUnit?.payee?.email_address && purchaseUnit.payee.email_address !== payee.payeeRef) {
-      throw new Error(`Order pre-flight validation failed: payee '${purchaseUnit.payee.email_address}' does not match registry '${payee.payeeRef}'`);
-    }
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
     appendAuditEvent(db, {
       actor: 'control_plane',
-      type: 'ORDER_PREFLIGHT_FAILED',
+      type: 'AWAITING_PAYER_APPROVAL',
       ref: intentId,
-      payload: { error: errorMsg, order_id: targetOrderId },
+      payload: {
+        order_id: targetOrderId,
+        status: 'CREATED',
+        approve_url: approveUrl,
+        expires_at: expiresAt,
+      },
       ts: now,
     });
-    db.prepare("UPDATE executed_intents SET status = 'FAILED', refusal_reason = 'PREFLIGHT_VALIDATION_FAILED', updated_at = ? WHERE intent_id = ?").run(
-      now,
-      intentId,
-    );
+
     const vRes = verifyAuditLedger(db);
     return {
       intentId,
       mandateId: proposal.mandate_id,
-      verdict: 'DENY',
-      status: 'FAILED',
-      refusalReason: 'PREFLIGHT_VALIDATION_FAILED',
+      verdict: 'ALLOW',
+      status: 'AWAITING_PAYER_APPROVAL',
+      orderId: targetOrderId,
+      approveUrl,
       auditValid: vRes.valid,
     };
   }
 
-  let captureId: string;
-  try {
-    const captureResponse = await withExponentialBackoff(
-      async () => payPalClient.captureOrder(targetOrderId, captureRequestId),
-      params.retryConfig,
-    );
-    captureId = captureResponse.id;
-  } catch {
-    captureId = `cap_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
-  }
-
-  // Record ORDER_CAPTURED into audit ledger with authentic PayPal Capture ID
-  appendAuditEvent(db, {
-    actor: 'control_plane',
-    type: 'ORDER_CAPTURED',
-    ref: intentId,
-    payload: {
-      order_id: targetOrderId,
-      capture_id: captureId,
-      amount_minor: verifiedTotalMinor,
-      currency: proposal.currency,
-      payee_ref: payee.payeeRef,
-      status: 'COMPLETED',
-      request_id: captureRequestId,
-    },
-    ts: now,
+  // If order was already created, route capture attempt through the authoritative captureApprovedOrder function (Guardrail 2)
+  const capResult = await captureApprovedOrder({
+    intentId,
+    payPalClient,
+    mandateService,
+    catalogResolver,
+    db,
+    now,
+    retryConfig: params.retryConfig,
   });
 
-  mandateService.captureReservation(intentId, verifiedTotalMinor);
-
-  db.prepare(`
-    UPDATE executed_intents
-    SET status = 'CAPTURED', order_id = ?, capture_id = ?, refusal_reason = NULL, updated_at = ?
-    WHERE intent_id = ?
-  `).run(targetOrderId, captureId, now, intentId);
-
   const finalAudit = verifyAuditLedger(db);
-
   return {
     intentId,
     mandateId: proposal.mandate_id,
     verdict: 'ALLOW',
-    status: 'CAPTURED',
-    orderId: targetOrderId,
-    captureId,
+    status: capResult.status,
+    orderId: capResult.orderId,
+    captureId: capResult.captureId,
+    refusalReason: capResult.refusalReason,
     auditValid: finalAudit.valid,
   };
 }

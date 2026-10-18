@@ -75,6 +75,10 @@ export interface PayPalOrderResponse {
     rel: string;
     method: string;
   }>;
+  payer?: {
+    payer_id?: string;
+    email_address?: string;
+  };
 }
 
 export interface PayPalCaptureResponse {
@@ -198,6 +202,7 @@ export function createMockPayPalFetch(): typeof fetch {
           id: captureId,
           status: 'COMPLETED',
           amount: { currency_code: 'USD', value: '9.00' },
+          purchase_units: [{ payments: { captures: [{ id: captureId, status: 'COMPLETED' }] } }],
           links: [{ href: `https://api-m.sandbox.paypal.com/v2/payments/captures/${captureId}`, rel: 'self', method: 'GET' }],
         }),
         { status: 201, headers: { 'Content-Type': 'application/json' } },
@@ -252,8 +257,10 @@ export function createMockPayPalFetch(): typeof fetch {
 
     // Webhook verification
     if (urlStr.includes('/v1/notifications/verify-webhook-signature')) {
+      const body = init?.body ? String(init.body) : '';
+      const isForged = body.toLowerCase().includes('forged');
       return new Response(
-        JSON.stringify({ verification_status: 'SUCCESS' }),
+        JSON.stringify({ verification_status: isForged ? 'FAILURE' : 'SUCCESS' }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     }

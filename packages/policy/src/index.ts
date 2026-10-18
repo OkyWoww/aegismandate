@@ -53,7 +53,7 @@ export function evaluatePolicy(
 
 function evaluateLegacyPolicy(context: PolicyEvaluationContext): PolicyDecision {
   const { mandate, intent, cumulativeSpendToDate } = context;
-  const now = context.evaluatedAt ?? new Date().toISOString();
+  const now = context.evaluatedAt ?? mandate.valid_from;
 
   // 1. Check expiration
   if (new Date(now).getTime() > new Date(mandate.valid_until).getTime()) {

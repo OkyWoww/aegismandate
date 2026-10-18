@@ -5,6 +5,7 @@ import {
   initMandateTables,
   initExecutorTables,
   executeGoldenPath,
+  captureApprovedOrder,
   type StoreCatalogResolver,
 } from './index.js';
 import {
@@ -173,6 +174,7 @@ describe('Shopper Agent Integration Tests & Scenarios (Task T-013, spec §2, dem
   let payPalOrderCalls = 0;
   let payPalCaptureCalls = 0;
   let payPalClient: PayPalClient;
+  let savedOrderUnits: unknown[] | null = null;
 
   function initIntegrationEnvironment() {
     db = openDb(':memory:');
@@ -208,6 +210,7 @@ describe('Shopper Agent Integration Tests & Scenarios (Task T-013, spec §2, dem
 
     payPalOrderCalls = 0;
     payPalCaptureCalls = 0;
+    savedOrderUnits = null;
     payPalClient = new PayPalClient({
       clientId: 'sandbox_client_id_agent_integ',
       clientSecret: 'sandbox_client_sec_agent_integ',
@@ -222,12 +225,26 @@ describe('Shopper Agent Integration Tests & Scenarios (Task T-013, spec §2, dem
         if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
           if (urlStr.includes('/capture')) {
             payPalCaptureCalls++;
+            const captureId = 'CAPTURE-INTEG-OK';
             return new Response(
-              JSON.stringify({ id: 'CAPTURE-INTEG-OK', status: 'COMPLETED' }),
+              JSON.stringify({
+                id: captureId,
+                status: 'COMPLETED',
+                purchase_units: [{ payments: { captures: [{ id: captureId, status: 'COMPLETED' }] } }],
+              }),
               { status: 201 },
             );
           }
           payPalOrderCalls++;
+          const body = init?.body ? JSON.parse(init.body as string) : {};
+          const createdUnits = body.purchase_units || [
+            {
+              reference_id: 'int_scenario_01',
+              amount: { value: '9.00', currency_code: 'USD' },
+              payee: { email_address: 'merchant@demo-store.local' },
+            },
+          ];
+          savedOrderUnits = createdUnits;
           return new Response(
             JSON.stringify({
               id: 'ORDER-INTEG-OK',
@@ -235,6 +252,22 @@ describe('Shopper Agent Integration Tests & Scenarios (Task T-013, spec §2, dem
               links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-INTEG-OK' }],
             }),
             { status: 201 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders') && (!init || init.method === 'GET' || !init.method)) {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-INTEG-OK',
+              status: 'APPROVED',
+              purchase_units: savedOrderUnits || [
+                {
+                  reference_id: 'int_scenario_01',
+                  amount: { value: '9.00', currency_code: 'USD' },
+                  payee: { email_address: 'merchant@demo-store.local' },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
           );
         }
         return new Response('Not Found', { status: 404 });
@@ -340,6 +373,16 @@ describe('Shopper Agent Integration Tests & Scenarios (Task T-013, spec §2, dem
     expect(result.success).toBe(true);
     expect(result.decision?.verdict).toBe('ALLOW');
     expect(payPalOrderCalls).toBe(1);
+
+    // Plan B: Buyer approves and capture is triggered
+    await captureApprovedOrder({
+      intentId: result.proposal!.intent_id,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      now: fixedNow,
+    });
     expect(payPalCaptureCalls).toBe(1);
 
     // Verify budget accounting: $9.00 captured, 0 reserved

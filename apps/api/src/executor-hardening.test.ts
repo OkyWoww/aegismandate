@@ -7,6 +7,10 @@ import {
   computeApprovalPayloadHash,
   generatePayPalRequestId,
   pollOrderStatus,
+  sweepExpiredIntents,
+  captureApprovedOrder,
+  reconcileCapturingIntents,
+  executeApprovedStepUp,
   type StoreCatalogResolver,
 } from './executor.js';
 import { PayPalClient } from '@mandatepay/paypal';
@@ -177,7 +181,7 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
       now: '2026-10-20T08:05:00Z',
     });
 
-    expect(res1.status).toBe('CAPTURED');
+    expect(res1.status).toBe('AWAITING_PAYER_APPROVAL');
     expect(res1.orderId).toBe('ORDER-AC3-01');
     expect(createOrderCallCount).toBe(1);
     expect(recordedRequestIds).toHaveLength(1);
@@ -195,7 +199,7 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
     });
 
     // Must return the stored result without calling PayPal again
-    expect(res2.status).toBe('CAPTURED');
+    expect(res2.status).toBe('AWAITING_PAYER_APPROVAL');
     expect(res2.orderId).toBe('ORDER-AC3-01');
     expect(res2.decision.decision_id).toBe(res1.decision.decision_id);
     expect(createOrderCallCount).toBe(1); // Zero additional PayPal calls!
@@ -481,7 +485,7 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
     });
 
     expect(attemptCount).toBe(2);
-    expect(res.status).toBe('CAPTURED');
+    expect(res.status).toBe('AWAITING_PAYER_APPROVAL');
     expect(res.orderId).toBe('ORDER-5XX-RECOVERED');
     // Critical: Identical idempotency key reused across retries
     expect(requestIdsSent).toHaveLength(2);
@@ -557,11 +561,12 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
     // Record initial executed_intent as APPROVED (pending capture)
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'int_polling_01',
       'mnd_hardened_01',
+      'mrc_demo_store',
       'ALLOW',
       '{}',
       'APPROVED',
@@ -588,6 +593,16 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
               id: 'ORDER-POLL-01',
               status: 'COMPLETED',
               intent: 'CAPTURE',
+              purchase_units: [
+                {
+                  reference_id: 'int_polling_01',
+                  amount: { value: '9.00', currency_code: 'USD' },
+                  payee: { email_address: 'merchant@demo-store.local' },
+                  payments: {
+                    captures: [{ id: 'CAP-POLL-01', status: 'COMPLETED' }],
+                  },
+                },
+              ],
             }),
             { status: 200 },
           );
@@ -601,6 +616,7 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
       orderId: 'ORDER-POLL-01',
       payPalClient,
       mandateService,
+      catalogResolver,
       db,
       now: '2026-10-20T08:36:00Z',
     });
@@ -621,4 +637,1174 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
     expect(pollEvent).toBeDefined();
     expect(JSON.parse(pollEvent!.payload).reconciled_to).toBe('CAPTURED');
   });
+
+  // --------------------------------------------------------------------------
+  // Round 5 Hardening: Race Condition Sweeper vs Capture (Guardrail 4, FR-34)
+  // --------------------------------------------------------------------------
+  it('Race condition: Sweeper vs Capture race produces exactly one winner and preserves budget invariants (Guardrail 4, FR-34)', async () => {
+    const proposal: PurchaseIntentProposal = {
+      intent_id: 'int_race_01',
+      mandate_id: 'mnd_hardened_01',
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+      claimed_total_minor: 900,
+      currency: 'USD',
+      user_goal_ref: 'msg_race',
+      rationale: 'Race test intent',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_race', trust: 'user' }] },
+    };
+
+    let captureCallCount = 0;
+    const payPalClient = new PayPalClient({
+      clientId: 'sandbox_client_id_race',
+      clientSecret: 'sandbox_client_sec_race',
+      environment: 'sandbox',
+      fetchFn: async (url, init) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/oauth2/token')) {
+          return new Response(JSON.stringify({ access_token: 'tok_race', expires_in: 3600 }), { status: 200 });
+        }
+        if (urlStr.includes('/capture') && init?.method === 'POST') {
+          captureCallCount++;
+          return new Response(
+            JSON.stringify({
+              id: 'CAP-RACE-01',
+              status: 'COMPLETED',
+              amount: { currency_code: 'USD', value: '9.00' },
+              purchase_units: [{ payments: { captures: [{ id: 'CAP-RACE-01', status: 'COMPLETED' }] } }],
+            }),
+            { status: 201 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-RACE-01',
+              status: 'CREATED',
+              intent: 'CAPTURE',
+              purchase_units: [{ amount: { value: '9.00', currency_code: 'USD' } }],
+              links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-RACE-01' }],
+            }),
+            { status: 201 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders/ORDER-RACE-01')) {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-RACE-01',
+              status: 'APPROVED',
+              intent: 'CAPTURE',
+              purchase_units: [
+                {
+                  reference_id: 'int_race_01',
+                  amount: { value: '9.00', currency_code: 'USD' },
+                  payee: { email_address: 'merchant@demo-store.local' },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+
+    const t0 = '2026-10-20T08:00:00Z';
+    const proposeRes = await executeGoldenPath({
+      proposal,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey: TEST_HMAC_KEY,
+      now: t0,
+    });
+    expect(proposeRes.status).toBe('AWAITING_PAYER_APPROVAL');
+    expect(mandateService.getSpend('mnd_hardened_01').reserved_minor).toBe(900);
+
+    const t1Expired = '2026-10-20T08:16:00Z';
+
+    const [sweepResult, captureResult] = await Promise.all([
+      Promise.resolve().then(() => sweepExpiredIntents(db, mandateService, t1Expired)),
+      captureApprovedOrder({
+        intentId: 'int_race_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: t1Expired,
+      }),
+    ]);
+
+    expect(sweepResult).toBeDefined();
+    const finalSpend = mandateService.getSpend('mnd_hardened_01');
+    const finalRow = db.prepare('SELECT status FROM executed_intents WHERE intent_id = ?').get('int_race_01') as { status: string };
+
+    if (finalRow.status === 'EXPIRED') {
+      expect(captureResult.status).toBe('EXPIRED');
+      expect(captureCallCount).toBe(0);
+      expect(finalSpend.reserved_minor).toBe(0);
+      expect(finalSpend.captured_minor).toBe(0);
+    } else {
+      expect(captureResult.status).toBe('CAPTURED');
+      expect(finalRow.status).toBe('CAPTURED');
+      expect(captureCallCount).toBe(1);
+      expect(finalSpend.reserved_minor).toBe(0);
+      expect(finalSpend.captured_minor).toBe(900);
+    }
+
+    expect(finalSpend.captured_minor + finalSpend.reserved_minor).toBeLessThanOrEqual(20000);
+  });
+
+  // --------------------------------------------------------------------------
+  // Round 5 Hardening: AC-12 Approval Expiry & Refusal of Expired Capture
+  // --------------------------------------------------------------------------
+  it('AC-12: Approval expiry — unapproved order past timeout transitions to EXPIRED, releases reservation, and refuses capture with zero captureOrder calls', async () => {
+    let captureOrderCalls = 0;
+    const payPalClient = new PayPalClient({
+      clientId: 'sandbox_client_id_ac12',
+      clientSecret: 'sandbox_client_sec_ac12',
+      environment: 'sandbox',
+      fetchFn: async (url, init) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/oauth2/token')) {
+          return new Response(JSON.stringify({ access_token: 'tok_ac12', expires_in: 3600 }), { status: 200 });
+        }
+        if (urlStr.includes('/capture')) {
+          captureOrderCalls++;
+          return new Response(JSON.stringify({ id: 'CAP-AC12', status: 'COMPLETED' }), { status: 201 });
+        }
+        if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-AC12-01',
+              status: 'CREATED',
+              links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-AC12-01' }],
+            }),
+            { status: 201 },
+          );
+        }
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+
+    const proposal: PurchaseIntentProposal = {
+      intent_id: 'int_ac12_timeout_01',
+      mandate_id: 'mnd_hardened_01',
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+      claimed_total_minor: 900,
+      currency: 'USD',
+      user_goal_ref: 'msg_ac12',
+      rationale: 'Timeout test',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_ac12', trust: 'user' }] },
+    };
+
+    const t0 = '2026-10-20T08:00:00Z';
+    const res0 = await executeGoldenPath({
+      proposal,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey: TEST_HMAC_KEY,
+      now: t0,
+    });
+    expect(res0.status).toBe('AWAITING_PAYER_APPROVAL');
+    expect(mandateService.getSpend('mnd_hardened_01').reserved_minor).toBe(900);
+
+    const tExpired = '2026-10-20T08:16:00Z';
+
+    const capRes = await captureApprovedOrder({
+      intentId: 'int_ac12_timeout_01',
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      now: tExpired,
+    });
+
+    expect(capRes.status).toBe('EXPIRED');
+    expect(capRes.refusalReason).toBe('PAYER_APPROVAL_TIMEOUT');
+    expect(captureOrderCalls).toBe(0);
+
+    const spendAfter = mandateService.getSpend('mnd_hardened_01');
+    expect(spendAfter.reserved_minor).toBe(0);
+    expect(spendAfter.captured_minor).toBe(0);
+
+    const expiredAudit = db
+      .prepare("SELECT type, payload FROM audit_events WHERE type = 'INTENT_EXPIRED' AND ref = ?")
+      .get('int_ac12_timeout_01') as { type: string; payload: string } | undefined;
+    expect(expiredAudit).toBeDefined();
+  });
+
+  // --------------------------------------------------------------------------
+  // Round 5 Hardening: AC-14 Idempotent Capture & ORDER_ALREADY_CAPTURED Error Recovery
+  // --------------------------------------------------------------------------
+  it('AC-14: Idempotent Capture — deterministic PayPal-Request-Id, ORDER_ALREADY_CAPTURED error recovery, and crash-after-capture recovery', async () => {
+    let captureCallCount = 0;
+    const requestIdsCaptured: string[] = [];
+    const throwAlreadyCaptured = true;
+    let orderStatus = 'APPROVED';
+
+    const payPalClient = new PayPalClient({
+      clientId: 'sandbox_client_id_ac14',
+      clientSecret: 'sandbox_client_sec_ac14',
+      environment: 'sandbox',
+      fetchFn: async (url, init) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/oauth2/token')) {
+          return new Response(JSON.stringify({ access_token: 'tok_ac14', expires_in: 3600 }), { status: 200 });
+        }
+        if (urlStr.includes('/capture') && init?.method === 'POST') {
+          captureCallCount++;
+          const headers = (init.headers ?? {}) as Record<string, string>;
+          if (headers['PayPal-Request-Id']) {
+            requestIdsCaptured.push(headers['PayPal-Request-Id']);
+          }
+          orderStatus = 'COMPLETED';
+          if (throwAlreadyCaptured) {
+            return new Response(
+              JSON.stringify({
+                name: 'UNPROCESSABLE_ENTITY',
+                message: 'The order has already been captured.',
+                details: [{ issue: 'ORDER_ALREADY_CAPTURED', description: 'Order already captured' }],
+              }),
+              { status: 422 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              id: 'CAP-AC14-ORIGINAL',
+              status: 'COMPLETED',
+              amount: { currency_code: 'USD', value: '9.00' },
+              purchase_units: [{ payments: { captures: [{ id: 'CAP-AC14-ORIGINAL', status: 'COMPLETED' }] } }],
+            }),
+            { status: 201 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-AC14-01',
+              status: 'CREATED',
+              links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-AC14-01' }],
+            }),
+            { status: 201 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders/ORDER-AC14-01')) {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-AC14-01',
+              status: orderStatus,
+              intent: 'CAPTURE',
+              purchase_units: [
+                {
+                  reference_id: 'int_ac14_01',
+                  amount: { value: '9.00', currency_code: 'USD' },
+                  payee: { email_address: 'merchant@demo-store.local' },
+                  payments: {
+                    captures: [{ id: 'CAP-AC14-RECONCILED', status: 'COMPLETED' }],
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (urlStr.includes('/v2/checkout/orders/ORDER-CRASH-01')) {
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-CRASH-01',
+              status: 'COMPLETED',
+              intent: 'CAPTURE',
+              purchase_units: [
+                {
+                  reference_id: 'int_crash_recovery_01',
+                  amount: { value: '9.00', currency_code: 'USD' },
+                  payee: { email_address: 'merchant@demo-store.local' },
+                  payments: {
+                    captures: [{ id: 'CAP-CRASH-RECONCILED', status: 'COMPLETED' }],
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+
+    const proposal: PurchaseIntentProposal = {
+      intent_id: 'int_ac14_01',
+      mandate_id: 'mnd_hardened_01',
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+      claimed_total_minor: 900,
+      currency: 'USD',
+      user_goal_ref: 'msg_ac14',
+      rationale: 'Idempotent capture test',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_ac14', trust: 'user' }] },
+    };
+
+    const t0 = '2026-10-20T08:00:00Z';
+    await executeGoldenPath({
+      proposal,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey: TEST_HMAC_KEY,
+      now: t0,
+    });
+
+    const capRes1 = await captureApprovedOrder({
+      intentId: 'int_ac14_01',
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      now: '2026-10-20T08:05:00Z',
+    });
+
+    expect(capRes1.status).toBe('CAPTURED');
+    expect(capRes1.captureId).toBe('CAP-AC14-RECONCILED');
+    expect(requestIdsCaptured).toHaveLength(1);
+    expect(requestIdsCaptured[0]).toBe(generatePayPalRequestId('int_ac14_01', 'capture_order'));
+
+    const initialCallCount = captureCallCount;
+    const capRes2 = await captureApprovedOrder({
+      intentId: 'int_ac14_01',
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      now: '2026-10-20T08:06:00Z',
+    });
+
+    expect(capRes2.status).toBe('CAPTURED');
+    expect(capRes2.captureId).toBe('CAP-AC14-RECONCILED');
+    expect(captureCallCount).toBe(initialCallCount);
+
+    mandateService.reserve({
+      mandateId: 'mnd_hardened_01',
+      intentId: 'int_crash_recovery_01',
+      amountMinor: 900,
+    });
+    db.prepare(`
+      INSERT INTO executed_intents (
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'int_crash_recovery_01',
+      'mnd_hardened_01',
+      'mrc_demo_store',
+      'ALLOW',
+      '{}',
+      'CAPTURING',
+      'ORDER-CRASH-01',
+      null,
+      'hash_crash',
+      null,
+      t0,
+      t0,
+    );
+
+    const reconciled = await reconcileCapturingIntents({
+      db,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      now: '2026-10-20T08:10:00Z',
+    });
+
+    expect(reconciled).toContain('int_crash_recovery_01');
+    const recoveredRow = db.prepare('SELECT status, capture_id FROM executed_intents WHERE intent_id = ?').get('int_crash_recovery_01') as { status: string; capture_id: string };
+    expect(recoveredRow.status).toBe('CAPTURED');
+    expect(recoveredRow.capture_id).toBe('CAP-CRASH-RECONCILED');
+  });
+
+  // --------------------------------------------------------------------------
+  // Round 5 Hardening: FR-38 Step-Up Lifecycle & Queue Discipline
+  // --------------------------------------------------------------------------
+  it('FR-38: Step-Up lifecycle — withhold order until confirm, reject frees budget, timeout frees budget, payload_hash mismatch refuses, and queue full enforces cap', async () => {
+    let orderCalls = 0;
+    const payPalClient = new PayPalClient({
+      clientId: 'sandbox_client_id_stepup',
+      clientSecret: 'sandbox_client_sec_stepup',
+      environment: 'sandbox',
+      fetchFn: async (url, init) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/v1/oauth2/token')) {
+          return new Response(JSON.stringify({ access_token: 'tok_stepup', expires_in: 3600 }), { status: 200 });
+        }
+        if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+          orderCalls++;
+          return new Response(
+            JSON.stringify({
+              id: 'ORDER-STEPUP-OK',
+              status: 'CREATED',
+              links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-STEPUP-OK' }],
+            }),
+            { status: 201 },
+          );
+        }
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+
+    const lampProposal: PurchaseIntentProposal = {
+      intent_id: 'int_stepup_spec_01',
+      mandate_id: 'mnd_hardened_01',
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-PEN-PACK', qty: 5, claimed_unit_price_minor: 900 }],
+      claimed_total_minor: 4500,
+      currency: 'USD',
+      user_goal_ref: 'msg_lamp',
+      rationale: 'Step up bulk pens',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_lamp', trust: 'user' }] },
+    };
+
+    const t0 = '2026-10-20T08:00:00Z';
+    const stepUpRes = await executeGoldenPath({
+      proposal: lampProposal,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey: TEST_HMAC_KEY,
+      now: t0,
+    });
+
+    expect(stepUpRes.verdict).toBe('STEP_UP');
+    expect(stepUpRes.status).toBe('APPROVED');
+    expect(stepUpRes.orderId).toBeUndefined();
+    expect(stepUpRes.approveUrl).toBeUndefined();
+    expect(orderCalls).toBe(0);
+
+    const spendPending = mandateService.getSpend('mnd_hardened_01');
+    expect(spendPending.reserved_minor).toBe(4500);
+
+    const releaseRes = mandateService.releaseReservation('int_stepup_spec_01', 'Owner rejected');
+    expect(releaseRes.success).toBe(true);
+    expect(mandateService.getSpend('mnd_hardened_01').reserved_minor).toBe(0);
+
+    const lampProposal2: PurchaseIntentProposal = {
+      ...lampProposal,
+      intent_id: 'int_stepup_spec_02',
+    };
+    await executeGoldenPath({
+      proposal: lampProposal2,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey: TEST_HMAC_KEY,
+      now: t0,
+    });
+    expect(orderCalls).toBe(0);
+
+    const confirmRes = await executeApprovedStepUp({
+      intentId: 'int_stepup_spec_02',
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey: TEST_HMAC_KEY,
+      now: t0,
+    });
+
+    expect(confirmRes.status).toBe('AWAITING_PAYER_APPROVAL');
+    expect(confirmRes.orderId).toBe('ORDER-STEPUP-OK');
+    expect(confirmRes.approveUrl).toBeDefined();
+    expect(orderCalls).toBe(1);
+  });
+
+  // --------------------------------------------------------------------------
+  // Round 5 Hardening: Negative Preflight Tests (FR-35, INV-6, INV-7)
+  // --------------------------------------------------------------------------
+  describe('Fail-Closed Preflight Negative Tests (FR-35, INV-6, INV-7)', () => {
+    it('Preflight fails closed when order response is missing reference_id (zero captureOrder calls)', async () => {
+      let captureOrderCalls = 0;
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_neg',
+        clientSecret: 'sandbox_client_sec_neg',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_neg', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture')) {
+            captureOrderCalls++;
+            return new Response(JSON.stringify({ id: 'CAP-ERR', status: 'COMPLETED' }), { status: 201 });
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-NEG-NO-REF',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-NEG-NO-REF' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-NEG-NO-REF')) {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-NEG-NO-REF',
+                status: 'APPROVED',
+                intent: 'CAPTURE',
+                purchase_units: [
+                  {
+                    // reference_id is MISSING
+                    amount: { value: '9.00', currency_code: 'USD' },
+                    payee: { email_address: 'merchant@demo-store.local' },
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_neg_no_ref_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_neg_ref',
+        rationale: 'Negative test missing reference_id',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_neg_ref', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const capRes = await captureApprovedOrder({
+        intentId: 'int_neg_no_ref_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      expect(capRes.status).toBe('FAILED');
+      expect(capRes.refusalReason).toBe('PREFLIGHT_VALIDATION_FAILED');
+      expect(captureOrderCalls).toBe(0);
+
+      // Verify reservation released atomically
+      const spend = mandateService.getSpend('mnd_hardened_01');
+      expect(spend.reserved_minor).toBe(0);
+      expect(spend.captured_minor).toBe(0);
+
+      // Verify audit event
+      const audit = db.prepare("SELECT type FROM audit_events WHERE type = 'ORDER_PREFLIGHT_FAILED' AND ref = ?").get('int_neg_no_ref_01');
+      expect(audit).toBeDefined();
+    });
+
+    it('Preflight fails closed when order response is missing amount or amount.value (zero captureOrder calls)', async () => {
+      let captureOrderCalls = 0;
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_neg',
+        clientSecret: 'sandbox_client_sec_neg',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_neg', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture')) {
+            captureOrderCalls++;
+            return new Response(JSON.stringify({ id: 'CAP-ERR', status: 'COMPLETED' }), { status: 201 });
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-NEG-NO-AMT',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-NEG-NO-AMT' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-NEG-NO-AMT')) {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-NEG-NO-AMT',
+                status: 'APPROVED',
+                intent: 'CAPTURE',
+                purchase_units: [
+                  {
+                    reference_id: 'int_neg_no_amt_01',
+                    // amount is MISSING
+                    payee: { email_address: 'merchant@demo-store.local' },
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_neg_no_amt_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_neg_amt',
+        rationale: 'Negative test missing amount',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_neg_amt', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const capRes = await captureApprovedOrder({
+        intentId: 'int_neg_no_amt_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      expect(capRes.status).toBe('FAILED');
+      expect(capRes.refusalReason).toBe('PREFLIGHT_VALIDATION_FAILED');
+      expect(captureOrderCalls).toBe(0);
+
+      const spend = mandateService.getSpend('mnd_hardened_01');
+      expect(spend.reserved_minor).toBe(0);
+      expect(spend.captured_minor).toBe(0);
+    });
+
+    it('Preflight fails closed when order response is missing payee (zero captureOrder calls)', async () => {
+      let captureOrderCalls = 0;
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_neg',
+        clientSecret: 'sandbox_client_sec_neg',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_neg', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture')) {
+            captureOrderCalls++;
+            return new Response(JSON.stringify({ id: 'CAP-ERR', status: 'COMPLETED' }), { status: 201 });
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-NEG-NO-PAYEE',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-NEG-NO-PAYEE' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-NEG-NO-PAYEE')) {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-NEG-NO-PAYEE',
+                status: 'APPROVED',
+                intent: 'CAPTURE',
+                purchase_units: [
+                  {
+                    reference_id: 'int_neg_no_payee_01',
+                    amount: { value: '9.00', currency_code: 'USD' },
+                    // payee is MISSING
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_neg_no_payee_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_neg_payee',
+        rationale: 'Negative test missing payee',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_neg_payee', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const capRes = await captureApprovedOrder({
+        intentId: 'int_neg_no_payee_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      expect(capRes.status).toBe('FAILED');
+      expect(capRes.refusalReason).toBe('PREFLIGHT_VALIDATION_FAILED');
+      expect(captureOrderCalls).toBe(0);
+
+      const spend = mandateService.getSpend('mnd_hardened_01');
+      expect(spend.reserved_minor).toBe(0);
+      expect(spend.captured_minor).toBe(0);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Round 5 Hardening: Negative Reconciliation & Recovery Tests (FR-37, rule.md §3.6)
+  // --------------------------------------------------------------------------
+  describe('Harden ORDER_ALREADY_CAPTURED & Reconciliation (FR-37, rule.md §3.6)', () => {
+    it('ORDER_ALREADY_CAPTURED with empty captures: [] transitions to FAILED, audits error, and does NOT record ORDER_CAPTURED', async () => {
+      let getOrderCalls = 0;
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_ac14_empty',
+        clientSecret: 'sandbox_client_sec_ac14_empty',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_ac14_empty', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                name: 'UNPROCESSABLE_ENTITY',
+                message: 'The order has already been captured.',
+                details: [{ issue: 'ORDER_ALREADY_CAPTURED', description: 'Order already captured' }],
+              }),
+              { status: 422 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-EMPTY-CAP-01',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-EMPTY-CAP-01' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-EMPTY-CAP-01')) {
+            getOrderCalls++;
+            if (getOrderCalls === 1) {
+              // Initial preflight getOrder returns APPROVED so captureOrder is dispatched
+              return new Response(
+                JSON.stringify({
+                  id: 'ORDER-EMPTY-CAP-01',
+                  status: 'APPROVED',
+                  intent: 'CAPTURE',
+                  purchase_units: [
+                    {
+                      reference_id: 'int_empty_caps_01',
+                      amount: { value: '9.00', currency_code: 'USD' },
+                      payee: { email_address: 'merchant@demo-store.local' },
+                    },
+                  ],
+                }),
+                { status: 200 },
+              );
+            }
+            // Reconciled order response has EMPTY captures array
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-EMPTY-CAP-01',
+                status: 'COMPLETED',
+                intent: 'CAPTURE',
+                purchase_units: [
+                  {
+                    reference_id: 'int_empty_caps_01',
+                    amount: { value: '9.00', currency_code: 'USD' },
+                    payee: { email_address: 'merchant@demo-store.local' },
+                    payments: {
+                      captures: [], // EMPTY captures array
+                    },
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_empty_caps_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_empty_caps',
+        rationale: 'Empty captures test',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_empty_caps', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const capRes = await captureApprovedOrder({
+        intentId: 'int_empty_caps_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      expect(capRes.status).toBe('FAILED');
+      expect(capRes.refusalReason).toBe('RECONCILIATION_FAILED');
+
+      // Assert NO ORDER_CAPTURED audit event is recorded
+      const capturedAudit = db.prepare("SELECT seq FROM audit_events WHERE type = 'ORDER_CAPTURED' AND ref = ?").get('int_empty_caps_01');
+      expect(capturedAudit).toBeUndefined();
+
+      // Assert reservation is released
+      const spend = mandateService.getSpend('mnd_hardened_01');
+      expect(spend.reserved_minor).toBe(0);
+      expect(spend.captured_minor).toBe(0);
+
+      // Assert status in database is FAILED, not CAPTURING or CAPTURED
+      const row = db.prepare('SELECT status, capture_id FROM executed_intents WHERE intent_id = ?').get('int_empty_caps_01') as { status: string; capture_id: string | null };
+      expect(row.status).toBe('FAILED');
+      expect(row.capture_id).toBeNull();
+    });
+
+    it('getOrder throwing an error during reconciliation releases reservation and does NOT leave intent stranded in CAPTURING', async () => {
+      let recGetOrderCalls = 0;
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_ac14_err',
+        clientSecret: 'sandbox_client_sec_ac14_err',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_ac14_err', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                name: 'UNPROCESSABLE_ENTITY',
+                message: 'The order has already been captured.',
+                details: [{ issue: 'ORDER_ALREADY_CAPTURED', description: 'Order already captured' }],
+              }),
+              { status: 422 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-REC-ERR-01',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-REC-ERR-01' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-REC-ERR-01')) {
+            recGetOrderCalls++;
+            if (recGetOrderCalls === 1) {
+              // Initial preflight getOrder succeeds so captureOrder is dispatched
+              return new Response(
+                JSON.stringify({
+                  id: 'ORDER-REC-ERR-01',
+                  status: 'APPROVED',
+                  intent: 'CAPTURE',
+                  purchase_units: [
+                    {
+                      reference_id: 'int_rec_err_01',
+                      amount: { value: '9.00', currency_code: 'USD' },
+                      payee: { email_address: 'merchant@demo-store.local' },
+                    },
+                  ],
+                }),
+                { status: 200 },
+              );
+            }
+            // GET order throws a 500 network/server error during reconciliation
+            return new Response('Internal Server Error', { status: 500 });
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_rec_err_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_rec_err',
+        rationale: 'Reconciliation error test',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_rec_err', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const capRes = await captureApprovedOrder({
+        intentId: 'int_rec_err_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      expect(capRes.status).toBe('FAILED');
+      expect(capRes.refusalReason).toBe('RECONCILIATION_FAILED');
+
+      // Intent MUST NOT be stranded in CAPTURING
+      const row = db.prepare('SELECT status FROM executed_intents WHERE intent_id = ?').get('int_rec_err_01') as { status: string };
+      expect(row.status).toBe('FAILED');
+
+      // Reservation MUST be released
+      const spend = mandateService.getSpend('mnd_hardened_01');
+      expect(spend.reserved_minor).toBe(0);
+      expect(spend.captured_minor).toBe(0);
+    });
+
+    it('Preflight getOrder throwing an error transitions intent to FAILED and releases reservation atomically (never stranded in CAPTURING)', async () => {
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_preflight_err',
+        clientSecret: 'sandbox_client_sec_preflight_err',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_preflight_err', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-PRE-ERR-01',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-PRE-ERR-01' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-PRE-ERR-01')) {
+            // Verify atomic transition: status MUST be CAPTURING when calling PayPal
+            const midRow = db.prepare('SELECT status FROM executed_intents WHERE intent_id = ?').get('int_pre_err_01') as { status: string } | undefined;
+            if (midRow?.status !== 'CAPTURING') {
+              throw new Error(`Atomic flip failed: expected CAPTURING but found ${midRow?.status}`);
+            }
+            // getOrder throws network/500 error before captureOrder is dispatched
+            return new Response('Network Connection Dropped', { status: 503 });
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_pre_err_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_pre_err',
+        rationale: 'Preflight network drop test',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_pre_err', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const capRes = await captureApprovedOrder({
+        intentId: 'int_pre_err_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      expect(capRes.status).toBe('FAILED');
+      expect(capRes.refusalReason).toContain('GET_ORDER_FAILED');
+      expect(capRes.refusalReason).toContain('Network Connection Dropped');
+
+      // Intent MUST NOT be stranded in CAPTURING
+      const row = db.prepare('SELECT status FROM executed_intents WHERE intent_id = ?').get('int_pre_err_01') as { status: string };
+      expect(row.status).toBe('FAILED');
+
+      // Reservation released atomically
+      const spend = mandateService.getSpend('mnd_hardened_01');
+      expect(spend.reserved_minor).toBe(0);
+      expect(spend.captured_minor).toBe(0);
+    });
+
+    it('Double-approve idempotency: second captureApprovedOrder call returns stored CAPTURED state with zero extra PayPal calls', async () => {
+      let captureOrderCalls = 0;
+      const payPalClient = new PayPalClient({
+        clientId: 'sandbox_client_id_double',
+        clientSecret: 'sandbox_client_sec_double',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'tok_double', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture') && init?.method === 'POST') {
+            captureOrderCalls++;
+            return new Response(
+              JSON.stringify({
+                id: 'CAP-DOUBLE-OK',
+                status: 'COMPLETED',
+                purchase_units: [{ payments: { captures: [{ id: 'CAP-DOUBLE-OK', status: 'COMPLETED' }] } }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-DOUBLE-01',
+                status: 'CREATED',
+                links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=ORDER-DOUBLE-01' }],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes('/v2/checkout/orders/ORDER-DOUBLE-01')) {
+            return new Response(
+              JSON.stringify({
+                id: 'ORDER-DOUBLE-01',
+                status: 'APPROVED',
+                intent: 'CAPTURE',
+                purchase_units: [
+                  {
+                    reference_id: 'int_double_01',
+                    amount: { value: '9.00', currency_code: 'USD' },
+                    payee: { email_address: 'merchant@demo-store.local' },
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      const proposal: PurchaseIntentProposal = {
+        intent_id: 'int_double_01',
+        mandate_id: 'mnd_hardened_01',
+        merchant_ref: 'mrc_demo_store',
+        items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
+        claimed_total_minor: 900,
+        currency: 'USD',
+        user_goal_ref: 'msg_double',
+        rationale: 'Double capture idempotency test',
+        provenance: { sources: [{ kind: 'user', ref: 'msg_double', trust: 'user' }] },
+      };
+
+      const t0 = '2026-10-20T08:00:00Z';
+      await executeGoldenPath({
+        proposal,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        hmacKey: TEST_HMAC_KEY,
+        now: t0,
+      });
+
+      const firstCap = await captureApprovedOrder({
+        intentId: 'int_double_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+      expect(firstCap.status).toBe('CAPTURED');
+      expect(firstCap.captureId).toBe('CAP-DOUBLE-OK');
+      expect(captureOrderCalls).toBe(1);
+
+      // Second capture attempt (double-approve)
+      const secondCap = await captureApprovedOrder({
+        intentId: 'int_double_01',
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:06:00Z',
+      });
+      expect(secondCap.status).toBe('CAPTURED');
+      expect(secondCap.captureId).toBe('CAP-DOUBLE-OK');
+      expect(captureOrderCalls).toBe(1); // ZERO extra PayPal calls!
+    });
+  });
 });
+

@@ -69,6 +69,13 @@ export const MandateSchema = z
     suspend_after_denies: z.number().int().positive().default(5),
     step_up: MandateStepUpSchema,
     risk: MandateRiskSchema,
+    payer_approval_timeout_seconds: z.number().int().positive().default(900).optional(),
+    payer_binding: z
+      .object({
+        payer_id: z.string().nullable().optional(),
+      })
+      .default({ payer_id: null })
+      .optional(),
     wallet: MandateWalletSchema,
     created_at: z.string().datetime(),
     signature: z.string().min(1),

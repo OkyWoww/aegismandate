@@ -16,7 +16,7 @@ describe('Policy Engine Property-Based Testing with fast-check (INV-8, FR-26)', 
           fc.record({
             priceMinor: fc.integer({ min: 10, max: 10000 }),
             qty: fc.integer({ min: 1, max: 10 }),
-            intentId: fc.stringMatching(/^[a-zA-Z0-9_]{5,15}$/),
+            intentId: fc.integer({ min: 10000, max: 999999 }).map((n) => `item_${n}`),
           }),
           { minLength: 1, maxLength: 50 },
         ),

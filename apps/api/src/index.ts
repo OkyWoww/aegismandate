@@ -25,7 +25,12 @@ import path from 'node:path';
 import 'dotenv/config';
 import { openDb } from '@mandatepay/audit';
 import { initMandateTables, MandateService } from './mandate-service.js';
-import { initExecutorTables, type StoreCatalogResolver } from './executor.js';
+import {
+  initExecutorTables,
+  type StoreCatalogResolver,
+  sweepExpiredIntents,
+  reconcileCapturingIntents,
+} from './executor.js';
 import { buildServer } from './server.js';
 
 export * from './mandate-service.js';
@@ -97,6 +102,14 @@ export async function startServer(options: StartServerOptions = {}) {
       // ignore
     }
   });
+
+  // Reconcile in-flight capturing intents on startup (FR-37) and sweep expired unapproved intents (FR-34)
+  try {
+    sweepExpiredIntents(db, mandateService);
+    await reconcileCapturingIntents({ db, payPalClient, mandateService, catalogResolver });
+  } catch (err) {
+    console.warn('[Startup Reconciliation Warning]:', err);
+  }
 
   await app.listen({ port, host });
   console.log(`[Control Plane API] Listening at http://${host}:${port}`);

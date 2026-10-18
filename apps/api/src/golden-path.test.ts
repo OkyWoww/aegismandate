@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb, verifyAuditLedger } from '@mandatepay/audit';
 import type { DatabaseConnection } from '@mandatepay/audit';
 import { MandateService, initMandateTables } from './mandate-service.js';
-import { executeGoldenPath, type StoreCatalogResolver } from './executor.js';
+import { executeGoldenPath, captureApprovedOrder, type StoreCatalogResolver } from './executor.js';
 import { PayPalClient } from '@mandatepay/paypal';
 import type { PurchaseIntentProposal } from '@mandatepay/schemas';
 
@@ -117,6 +117,9 @@ describe('Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26)', () => {
     });
     mandateService.activate('mnd_demo_001');
 
+    // In-memory order store for high-fidelity PayPal mock
+    const ordersMap = new Map<string, { id: string; status: string; intent: string; purchase_units: Array<Record<string, unknown>>; links: Array<Record<string, unknown>> }>();
+
     // PayPal Client using high-fidelity Sandbox Orders v2 mock fetcher
     payPalClient = new PayPalClient({
       clientId: 'sandbox_client_id_t007',
@@ -137,6 +140,7 @@ describe('Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26)', () => {
               id: captureId,
               status: 'COMPLETED',
               amount: { currency_code: 'USD', value: '9.00' },
+              purchase_units: [{ payments: { captures: [{ id: captureId, status: 'COMPLETED' }] } }],
             }),
             { status: 201, headers: { 'Content-Type': 'application/json' } },
           );
@@ -144,19 +148,28 @@ describe('Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26)', () => {
         if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
           const body = JSON.parse(init.body as string);
           const orderId = `ORDER-SANDBOX-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+          const orderObj = {
+            id: orderId,
+            status: 'APPROVED',
+            intent: body.intent,
+            purchase_units: body.purchase_units,
+            links: [
+              { href: `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`, rel: 'approve', method: 'GET' },
+              { href: `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, rel: 'capture', method: 'POST' },
+            ],
+          };
+          ordersMap.set(orderId, orderObj);
           return new Response(
-            JSON.stringify({
-              id: orderId,
-              status: 'CREATED',
-              intent: body.intent,
-              purchase_units: body.purchase_units,
-              links: [
-                { href: `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`, rel: 'approve', method: 'GET' },
-                { href: `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, rel: 'capture', method: 'POST' },
-              ],
-            }),
+            JSON.stringify(orderObj),
             { status: 201, headers: { 'Content-Type': 'application/json' } },
           );
+        }
+        const matchOrder = urlStr.match(/\/v2\/checkout\/orders\/([^/?]+)/);
+        if (matchOrder && matchOrder[1] && (!init || init.method === 'GET' || !init.method)) {
+          const ord = ordersMap.get(matchOrder[1]);
+          if (ord) {
+            return new Response(JSON.stringify(ord), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
         }
         return new Response('Not Found', { status: 404 });
       },
@@ -191,9 +204,11 @@ describe('Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26)', () => {
       now: '2026-10-20T08:05:00Z',
     });
 
-    // 1. Verdict & Decision assertions
+    // 1. Verdict & Plan B Decision assertions
     expect(result.verdict).toBe('ALLOW');
-    expect(result.status).toBe('CAPTURED');
+    expect(result.status).toBe('AWAITING_PAYER_APPROVAL');
+    expect(result.approveUrl).toBeDefined();
+    expect(result.orderId).toMatch(/^ORDER-SANDBOX-[A-Z0-9]+$/);
     expect(result.decision.verdict).toBe('ALLOW');
     expect(result.decision.reason_codes).toContain('APPROVED');
     expect(result.decision.verified_total_minor).toBe(900);
@@ -206,22 +221,33 @@ describe('Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26)', () => {
     expect(traceRules).toContain('P-07');
     expect(traceRules).toContain('P-08');
 
-    // 2. Reservation & Spend accounting
-    const spend = mandateService.getSpend('mnd_demo_001');
-    expect(spend.captured_minor).toBe(900); // Shifted from reserved to captured
-    expect(spend.reserved_minor).toBe(0);
+    // 2. Reservation state before capture is HELD (FR-33, AC-12)
+    const spendBefore = mandateService.getSpend('mnd_demo_001');
+    expect(spendBefore.reserved_minor).toBe(900);
+    expect(spendBefore.captured_minor).toBe(0);
 
-    // 3. Real/Sandbox Order and Capture IDs
-    expect(result.orderId).toMatch(/^ORDER-SANDBOX-[A-Z0-9]+$/);
-    expect(result.captureId).toMatch(/^CAPTURE-SANDBOX-[A-Z0-9]+$/);
+    // 3. Plan B Payer Approval & Capture step (AC-1)
+    const capRes = await captureApprovedOrder({
+      intentId: proposal.intent_id,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      now: '2026-10-20T08:06:00Z',
+    });
 
-    // 4. Audit chain validation: shows >= 5 linked events for execution (AC-1)
-    expect(result.auditValid).toBe(true);
-    expect(result.auditEventsCount).toBeGreaterThanOrEqual(5);
+    expect(capRes.status).toBe('CAPTURED');
+    expect(capRes.captureId).toMatch(/^CAPTURE-SANDBOX-[A-Z0-9]+$/);
 
-    // Verify chain integrity using verifyAuditLedger
+    // 4. Reservation & Spend accounting after capture
+    const spendAfter = mandateService.getSpend('mnd_demo_001');
+    expect(spendAfter.captured_minor).toBe(900); // Shifted from reserved to captured
+    expect(spendAfter.reserved_minor).toBe(0);
+
+    // 5. Audit chain validation: shows >= 6 linked events for execution (AC-1)
     const chainVerify = verifyAuditLedger(db);
     expect(chainVerify.valid).toBe(true);
+    expect(chainVerify.count).toBeGreaterThanOrEqual(6);
   });
 
   it('Denies out-of-limit intent without making any PayPal call', async () => {
@@ -292,10 +318,21 @@ describe('Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26)', () => {
       });
 
       expect(res.verdict).toBe('ALLOW');
-      expect(res.status).toBe('CAPTURED');
+      expect(res.status).toBe('AWAITING_PAYER_APPROVAL');
       expect(res.orderId).toBeDefined();
-      expect(res.captureId).toBeDefined();
-      executionResults.push(res);
+
+      const capRes = await captureApprovedOrder({
+        intentId,
+        payPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: `2026-10-20T08:${String(i).padStart(2, '0')}:30Z`,
+      });
+
+      expect(capRes.status).toBe('CAPTURED');
+      expect(capRes.captureId).toBeDefined();
+      executionResults.push(capRes);
     }
 
     // 20 out of 20 runs must succeed

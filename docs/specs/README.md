@@ -37,11 +37,11 @@ If two files disagree, fix the lower-priority file, never silently pick one.
 | Area | Status | Evidence link / commit |
 |------|--------|------------------------|
 | PayPal sandbox spike (T-002) | done — Plan B locked (11 Oct) | tech.md §4.3–4.4 |
-| Mandate + policy engine + reservations (Phase 1–2) | implemented per repo (self-reported, `v0.9.0-rc2`) | tasks.md progress snapshot |
-| Attack suite A-01..A-12 (Phase 2) | implemented per repo (self-reported) | tasks.md progress snapshot; add forged-webhook and nested-value cases |
-| Agent runtime + owner confirmation (Phase 3) | partly reported; STEP_UP-under-Plan-B open | tasks.md |
-| Live e2e with real capture (T-029) | **open — top priority** | |
-| Dashboard (Phase 3) | not started | |
+| Mandate + policy engine + reservations (Phase 1–2) | hardened & verified (Plan B, `v0.9.0-rc3`) | `docs/evidence/rc3/` |
+| Attack suite A-01..A-12 (Phase 2) | verified (32 tests pass; 0 PayPal calls across blocked attacks) | `docs/evidence/rc3/attack-suite.txt` |
+| Agent runtime + owner confirmation (Phase 3) | verified (FR-38 step-up order withholding & hash binding) | `docs/evidence/rc3/test.txt` |
+| Live e2e with real capture (T-029) | scripts ready (`smoke.ts` stops at `AWAITING_PAYER_APPROVAL` with `HELD`; `e2e:live` implemented) | `scripts/smoke.ts`, `scripts/live-e2e.ts` |
+| Dashboard (Phase 3) | in progress | `apps/web/` |
 | Dispute module (Phase 4, Should) | not started | |
 | README + video + Devpost text (Phase 5) | not started | |
 

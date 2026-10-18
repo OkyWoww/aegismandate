@@ -1,4 +1,4 @@
-import fastify, { type FastifyInstance } from 'fastify';
+import fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import {
   type DatabaseConnection,
@@ -14,6 +14,9 @@ import { MandateService } from './mandate-service.js';
 import {
   executeGoldenPath,
   executeApprovedStepUp,
+  captureApprovedOrder,
+  checkAndExpireIntent,
+  sweepExpiredIntents,
   initExecutorTables,
   type StoreCatalogResolver,
 } from './executor.js';
@@ -153,10 +156,15 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   });
 
   // --------------------------------------------------------------------------
-  // Intent Status Lookup (FR-9, FR-10)
+  // Intent Status Lookup (FR-9, FR-10, FR-34)
   // --------------------------------------------------------------------------
   app.get<{ Params: { id: string } }>('/v1/intents/:id', async (request, reply) => {
     const { id } = request.params;
+    const nowTs = getNow();
+
+    // Lazy check on approval timeout (FR-34, AC-12)
+    checkAndExpireIntent(db, mandateService, id, nowTs);
+
     const row = db
       .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
       .get(id) as
@@ -170,6 +178,8 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
           capture_id: string | null;
           payload_hash: string | null;
           refusal_reason: string | null;
+          approve_url: string | null;
+          expires_at: string | null;
           created_at: string;
           updated_at: string;
         }
@@ -192,6 +202,21 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         method: 'POST',
         description: 'Human approval endpoint for step-up purchase',
       });
+      links.push({
+        rel: 'reject',
+        href: `/v1/intents/${id}/reject`,
+        method: 'POST',
+        description: 'Human rejection endpoint for step-up purchase',
+      });
+    }
+
+    if (row.status === 'AWAITING_PAYER_APPROVAL' && row.approve_url) {
+      links.push({
+        rel: 'paypal_approve',
+        href: row.approve_url,
+        method: 'GET',
+        description: 'PayPal sandbox buyer approval URL',
+      });
     }
 
     return reply.code(200).send({
@@ -203,6 +228,8 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       capture_id: row.capture_id,
       payload_hash: row.payload_hash,
       refusal_reason: row.refusal_reason,
+      approve_url: row.approve_url,
+      expires_at: row.expires_at,
       decision,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -211,88 +238,239 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   });
 
   // --------------------------------------------------------------------------
-  // Human Step-Up Approval (FR-16, FR-18, FR-28, FR-29, AC-9)
+  // Human Approval / Capture Trigger (FR-16, FR-18, FR-28, FR-29, FR-34, AC-9, AC-12)
   // --------------------------------------------------------------------------
-  app.post<{
-    Params: { id: string };
-    Body?: { expected_payload_hash?: string };
-  }>(
-    '/v1/intents/:id/approve',
-    async (request, reply) => {
-      const { id } = request.params;
-      const expectedPayloadHash = request.body?.expected_payload_hash;
+  const handleApprove = async (
+    id: string,
+    expectedPayloadHash: string | undefined,
+    reply: FastifyReply,
+  ) => {
+    const nowTs = getNow();
 
-      const row = db
-        .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
-        .get(id) as { intent_id: string; verdict: string; status: string } | undefined;
+    // Lazy check on approval timeout (FR-34, AC-12)
+    checkAndExpireIntent(db, mandateService, id, nowTs);
 
-      if (!row) {
-        return reply.code(404).send({
-          error: 'INTENT_NOT_FOUND',
-          message: `Intent '${id}' not found for approval`,
-        });
-      }
+    const row = db
+      .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
+      .get(id) as {
+        intent_id: string;
+        verdict: string;
+        status: string;
+        order_id: string | null;
+        capture_id: string | null;
+      } | undefined;
 
-      if (row.verdict !== 'STEP_UP') {
-        return reply.code(400).send({
-          error: 'INVALID_VERDICT',
-          message: `Intent '${id}' cannot be approved because verdict is '${row.verdict}' (expected 'STEP_UP')`,
-        });
-      }
+    if (!row) {
+      return reply.code(404).send({
+        error: 'INTENT_NOT_FOUND',
+        message: `Intent '${id}' not found for approval`,
+      });
+    }
 
-      if (row.status === 'CAPTURED') {
-        return reply.code(200).send({
-          status: 'CAPTURED',
-          intent_id: id,
-          message: 'Intent has already been approved and captured',
-        });
-      }
+    if (row.status === 'EXPIRED') {
+      return reply.code(422).send({
+        error: 'PAYER_APPROVAL_TIMEOUT',
+        message: 'Approval rejected: intent has expired and reservation was released (FR-34)',
+        refusal_reason: 'PAYER_APPROVAL_TIMEOUT',
+      });
+    }
 
-      const result = await executeApprovedStepUp({
+    if (row.status === 'CAPTURED') {
+      return reply.code(200).send({
+        status: 'CAPTURED',
+        intent_id: id,
+        order_id: row.order_id,
+        capture_id: row.capture_id,
+        message: 'Intent has already been captured',
+      });
+    }
+
+    // If order was already created and is awaiting payer approval or capturing, route through captureApprovedOrder
+    if (row.status === 'AWAITING_PAYER_APPROVAL' || row.status === 'CAPTURING') {
+      const captureResult = await captureApprovedOrder({
         intentId: id,
         payPalClient,
         mandateService,
         catalogResolver,
         db,
-        hmacKey,
-        expectedPayloadHash,
-        now: getNow(),
+        now: nowTs,
       });
 
-      if (result.refusalReason === 'PAYLOAD_HASH_MISMATCH') {
+      if (captureResult.status === 'EXPIRED') {
         return reply.code(422).send({
-          error: 'PAYLOAD_HASH_MISMATCH',
-          message: 'Approval rejected: payload hash mismatch (FR-28)',
-          refusal_reason: 'PAYLOAD_HASH_MISMATCH',
+          error: 'PAYER_APPROVAL_TIMEOUT',
+          message: 'Approval rejected: intent has expired and reservation was released (FR-34)',
+          refusal_reason: 'PAYER_APPROVAL_TIMEOUT',
         });
       }
 
-      if (result.status === 'FAILED') {
-        return reply.code(400).send({
-          error: result.refusalReason ?? 'APPROVAL_EXECUTION_FAILED',
-          message: `Approval execution failed: ${result.refusalReason}`,
-          refusal_reason: result.refusalReason,
-        });
-      }
-
-      if (result.status === 'AWAITING_PAYER_APPROVAL') {
+      if (captureResult.status === 'AWAITING_PAYER_APPROVAL') {
         return reply.code(200).send({
           status: 'AWAITING_PAYER_APPROVAL',
-          intent_id: result.intentId,
-          order_id: result.orderId,
-          approve_url: result.approveUrl,
+          intent_id: id,
+          order_id: captureResult.orderId,
           message: 'Order created on PayPal; awaiting payer approval before capture',
+        });
+      }
+
+      if (captureResult.status === 'FAILED') {
+        return reply.code(400).send({
+          error: captureResult.refusalReason ?? 'CAPTURE_FAILED',
+          message: `Capture failed: ${captureResult.refusalReason}`,
+          refusal_reason: captureResult.refusalReason,
         });
       }
 
       return reply.code(200).send({
         status: 'CAPTURED',
+        intent_id: id,
+        order_id: captureResult.orderId,
+        capture_id: captureResult.captureId,
+      });
+    }
+
+    if (row.verdict !== 'STEP_UP') {
+      return reply.code(400).send({
+        error: 'INVALID_VERDICT',
+        message: `Intent '${id}' cannot be approved because verdict is '${row.verdict}' (expected 'STEP_UP')`,
+      });
+    }
+
+    const result = await executeApprovedStepUp({
+      intentId: id,
+      payPalClient,
+      mandateService,
+      catalogResolver,
+      db,
+      hmacKey,
+      expectedPayloadHash,
+      now: nowTs,
+    });
+
+    if (result.refusalReason === 'PAYLOAD_HASH_MISMATCH') {
+      return reply.code(422).send({
+        error: 'PAYLOAD_HASH_MISMATCH',
+        message: 'Approval rejected: payload hash mismatch (FR-28)',
+        refusal_reason: 'PAYLOAD_HASH_MISMATCH',
+      });
+    }
+
+    if (result.status === 'FAILED') {
+      return reply.code(400).send({
+        error: result.refusalReason ?? 'APPROVAL_EXECUTION_FAILED',
+        message: `Approval execution failed: ${result.refusalReason}`,
+        refusal_reason: result.refusalReason,
+      });
+    }
+
+    if (result.status === 'AWAITING_PAYER_APPROVAL') {
+      return reply.code(200).send({
+        status: 'AWAITING_PAYER_APPROVAL',
         intent_id: result.intentId,
         order_id: result.orderId,
-        capture_id: result.captureId,
+        approve_url: result.approveUrl,
+        message: 'Order created on PayPal; awaiting payer approval before capture',
       });
-    },
-  );
+    }
+
+    return reply.code(200).send({
+      status: 'CAPTURED',
+      intent_id: result.intentId,
+      order_id: result.orderId,
+      capture_id: result.captureId,
+    });
+  };
+
+  app.post<{
+    Params: { id: string };
+    Body?: { expected_payload_hash?: string };
+  }>('/v1/intents/:id/approve', async (request, reply) => {
+    return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
+  });
+
+  app.get('/v1/approvals', async () => {
+    const nowTs = getNow();
+    sweepExpiredIntents(db, mandateService, nowTs);
+
+    const rows = db
+      .prepare(
+        `SELECT intent_id, mandate_id, verdict, status, order_id, payload_hash, refusal_reason, approve_url, expires_at, created_at, updated_at
+         FROM executed_intents
+         WHERE verdict = 'STEP_UP' AND status IN ('APPROVED', 'PENDING_APPROVAL', 'AWAITING_PAYER_APPROVAL')
+         ORDER BY created_at ASC`,
+      )
+      .all();
+
+    return {
+      approvals: rows,
+      total: rows.length,
+    };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body?: { expected_payload_hash?: string };
+  }>('/v1/approvals/:id/approve', async (request, reply) => {
+    return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
+  });
+
+  // --------------------------------------------------------------------------
+  // Human Step-Up Rejection (FR-18, FR-26)
+  // --------------------------------------------------------------------------
+  const handleReject = async (
+    id: string,
+    reply: FastifyReply,
+  ) => {
+    const nowTs = getNow();
+
+    const row = db
+      .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
+      .get(id) as { intent_id: string; status: string } | undefined;
+
+    if (!row) {
+      return reply.code(404).send({
+        error: 'INTENT_NOT_FOUND',
+        message: `Intent '${id}' not found for rejection`,
+      });
+    }
+
+    if (row.status === 'CAPTURED') {
+      return reply.code(400).send({
+        error: 'ALREADY_CAPTURED',
+        message: 'Cannot reject an already captured intent',
+      });
+    }
+
+    mandateService.releaseReservation(id, 'Owner rejected step-up purchase intent');
+    db.prepare(
+      "UPDATE executed_intents SET status = 'REJECTED', refusal_reason = 'OWNER_REJECTED', updated_at = ? WHERE intent_id = ?",
+    ).run(nowTs, id);
+
+    appendAuditEvent(db, {
+      actor: 'user',
+      type: 'INTENT_REJECTED',
+      ref: id,
+      payload: {
+        intent_id: id,
+        reason: 'OWNER_REJECTED',
+      },
+      ts: nowTs,
+    });
+
+    return reply.code(200).send({
+      intent_id: id,
+      status: 'REJECTED',
+      message: 'Intent rejected and reservation released',
+    });
+  };
+
+  app.post<{ Params: { id: string } }>('/v1/intents/:id/reject', async (request, reply) => {
+    return handleReject(request.params.id, reply);
+  });
+
+  app.post<{ Params: { id: string } }>('/v1/approvals/:id/reject', async (request, reply) => {
+    return handleReject(request.params.id, reply);
+  });
 
   // --------------------------------------------------------------------------
   // Mandate Inspection & Spend Tracking (FR-1..FR-6, FR-26)
@@ -481,18 +659,15 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         .get(customId) as { intent_id: string; status: string } | undefined;
 
       if (intentRow) {
-        if (eventType === 'PAYMENT.CAPTURE.COMPLETED') {
-          if (intentRow.status !== 'CAPTURED') {
-            const res = db
-              .prepare('SELECT amount_minor FROM reservations WHERE intent_id = ?')
-              .get(customId) as { amount_minor: number } | undefined;
-            if (res) {
-              mandateService.captureReservation(customId, res.amount_minor);
-            }
-            db.prepare(
-              "UPDATE executed_intents SET status = 'CAPTURED', updated_at = ? WHERE intent_id = ?",
-            ).run(nowTs, customId);
-          }
+        if (eventType === 'PAYMENT.CAPTURE.COMPLETED' || eventType === 'CHECKOUT.ORDER.APPROVED') {
+          await captureApprovedOrder({
+            intentId: customId,
+            payPalClient,
+            mandateService,
+            catalogResolver,
+            db,
+            now: nowTs,
+          });
         } else if (eventType === 'PAYMENT.CAPTURE.DENIED') {
           mandateService.releaseReservation(
             customId,

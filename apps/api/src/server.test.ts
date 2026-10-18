@@ -197,9 +197,15 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
         if (urlStr.includes('/v2/checkout/orders') && init?.method === 'POST') {
           if (urlStr.includes('/capture')) {
             captureCallCount++;
-            return new Response(JSON.stringify({ id: 'CAPTURE-HTTP-OK', status: 'COMPLETED' }), {
-              status: 201,
-            });
+            const captureId = 'CAPTURE-HTTP-OK';
+            return new Response(
+              JSON.stringify({
+                id: captureId,
+                status: 'COMPLETED',
+                purchase_units: [{ payments: { captures: [{ id: captureId, status: 'COMPLETED' }] } }],
+              }),
+              { status: 201 },
+            );
           }
           orderCallCount++;
           let reqBody: { intent?: string; purchase_units?: unknown[] } = {};
@@ -247,7 +253,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
                 status: 'APPROVED',
                 purchase_units: [
                   {
-                    reference_id: 'int_test_foreign',
+                    reference_id: 'int_http_preflight_fail_01',
                     amount: { currency_code: 'USD', value: '45.00' },
                     payee: { email_address: 'attacker@evil.com' },
                   },
@@ -370,21 +376,42 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.verdict).toBe('ALLOW');
-    expect(body.status).toBe('CAPTURED');
+    expect(body.status).toBe('AWAITING_PAYER_APPROVAL');
     expect(body.order_id).toBe('ORDER-HTTP-OK');
-    expect(body.capture_id).toBe('CAPTURE-HTTP-OK');
+    expect(body.approve_url).toBeDefined();
     expect(orderCallCount).toBe(1);
-    expect(captureCallCount).toBe(1);
+    expect(captureCallCount).toBe(0);
 
-    // Verify budget updated: $9.00 captured
+    // Verify budget reserved before buyer approval: $9.00 reserved
     const spendRes = await server.inject({
       method: 'GET',
       url: `/v1/mandates/${mandateId}`,
     });
     expect(spendRes.statusCode).toBe(200);
     const spendBody = JSON.parse(spendRes.body);
-    expect(spendBody.spend.captured_minor).toBe(900);
-    expect(spendBody.spend.reserved_minor).toBe(0);
+    expect(spendBody.spend.captured_minor).toBe(0);
+    expect(spendBody.spend.reserved_minor).toBe(900);
+
+    // Simulate buyer approval and trigger capture via approve endpoint
+    const approveRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_pen_01/approve',
+    });
+    expect(approveRes.statusCode).toBe(200);
+    const approveBody = JSON.parse(approveRes.body);
+    expect(approveBody.status).toBe('CAPTURED');
+    expect(approveBody.order_id).toBe('ORDER-HTTP-OK');
+    expect(approveBody.capture_id).toBe('CAPTURE-HTTP-OK');
+    expect(captureCallCount).toBe(1);
+
+    // Verify budget settled: $9.00 captured
+    const settledRes = await server.inject({
+      method: 'GET',
+      url: `/v1/mandates/${mandateId}`,
+    });
+    const settledBody = JSON.parse(settledRes.body);
+    expect(settledBody.spend.captured_minor).toBe(900);
+    expect(settledBody.spend.reserved_minor).toBe(0);
   });
 
   // --------------------------------------------------------------------------
@@ -466,7 +493,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const body = JSON.parse(getRes.body);
     expect(body.intent_id).toBe('int_http_lookup_01');
     expect(body.verdict).toBe('ALLOW');
-    expect(body.status).toBe('CAPTURED');
+    expect(body.status).toBe('AWAITING_PAYER_APPROVAL');
     expect(body.decision).toBeDefined();
     expect(body.decision.verdict).toBe('ALLOW');
   });
@@ -530,7 +557,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       payload: freshProposal,
     });
 
-    // 4. Valid human approval
+    // 4. Valid human approval creates PayPal order and returns approve_url (FR-38)
     const validApproveRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_stepup_flow_02/approve',
@@ -538,9 +565,23 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
 
     expect(validApproveRes.statusCode).toBe(200);
     const validBody = JSON.parse(validApproveRes.body);
-    expect(validBody.status).toBe('CAPTURED');
+    expect(validBody.status).toBe('AWAITING_PAYER_APPROVAL');
     expect(validBody.order_id).toBe('ORDER-HTTP-OK');
+    expect(validBody.approve_url).toBeDefined();
     expect(orderCallCount).toBe(1);
+    expect(captureCallCount).toBe(0);
+
+    // 4b. Payer approves on PayPal -> capture is executed
+    const captureRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_stepup_flow_02/approve',
+    });
+
+    expect(captureRes.statusCode).toBe(200);
+    const captureBody = JSON.parse(captureRes.body);
+    expect(captureBody.status).toBe('CAPTURED');
+    expect(captureBody.order_id).toBe('ORDER-HTTP-OK');
+    expect(captureBody.capture_id).toBe('CAPTURE-HTTP-OK');
     expect(captureCallCount).toBe(1);
 
     // Budget shifted from reserved to captured ($45.00 captured, $0 reserved)
@@ -596,8 +637,16 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const directBody = JSON.parse(directApproveRes.body);
     expect(directBody.order_id).toBe('ORDER-HTTP-2'); // Legitimate order created by server, not client-supplied
     expect(directBody.order_id).not.toBe('ORDER-FOREIGN-ATTACKER');
-    expect(directBody.status).toBe('CAPTURED');
-    expect(directBody.capture_id).toBe('CAPTURE-HTTP-OK');
+    expect(directBody.status).toBe('AWAITING_PAYER_APPROVAL');
+
+    const directCaptureRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_stepup_direct_order/approve',
+    });
+    expect(directCaptureRes.statusCode).toBe(200);
+    const directCaptureBody = JSON.parse(directCaptureRes.body);
+    expect(directCaptureBody.status).toBe('CAPTURED');
+    expect(directCaptureBody.capture_id).toBe('CAPTURE-HTTP-OK');
   });
 
   it('Priority 1: Rejects approval when PayPal order pre-flight validation fails (wrong status or payee)', async () => {

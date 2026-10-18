@@ -4,15 +4,17 @@
  * Verifies full HTTP Control Plane lifecycle over ephemeral services:
  * 1. GET  /health -> Service liveness probe
  * 2. GET  /v1/mandates/:id -> Seed integrity & active mandate retrieval
- * 3. POST /v1/intents/propose -> In-mandate purchase (ALLOW) auto-captured
- * 4. POST /v1/intents/propose & /approve -> Step-up purchase (STEP_UP) human-approved & captured
+ * 3. POST /v1/intents/propose -> In-mandate purchase (ALLOW) created & routed to buyer approval
+ * 4. POST /v1/intents/propose & /approve -> Step-up purchase (STEP_UP) authorized & routed to buyer approval
  * 5. GET  /v1/audit/verify -> SHA-256 cryptographic audit ledger verification
  *
  * Guarantees zero orphaned processes and deterministic cleanup.
+ * Aligned strictly with Plan B (FR-26, FR-34, FR-38): Stops cleanly at AWAITING_PAYER_APPROVAL + approve_url.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { openDb } from '../packages/audit/src/index.js';
 import { runSeed } from '../apps/stores/src/index.js';
 import { startServer } from '../apps/api/src/index.js';
 
@@ -150,7 +152,7 @@ async function runSmokeSuite(): Promise<boolean> {
     }
 
     // ------------------------------------------------------------------------
-    // Step 3: Propose ALLOW Intent & Verify Auto-Capture
+    // Step 3: Propose ALLOW Intent & Verify Awaiting Approval + HELD Reservation
     // ------------------------------------------------------------------------
     const t3Start = Date.now();
     try {
@@ -184,22 +186,33 @@ async function runSmokeSuite(): Promise<boolean> {
         intent_id: string;
         status: string;
         order_id?: string;
-        capture_id?: string;
+        approve_url?: string;
       };
 
       if (
         res.status === 200 &&
         body.verdict === 'ALLOW' &&
-        body.status === 'CAPTURED' &&
+        body.status === 'AWAITING_PAYER_APPROVAL' &&
         body.order_id &&
-        body.capture_id
+        body.approve_url
       ) {
+        // Assert reservation state is HELD in database
+        const db = openDb(SMOKE_DB_PATH);
+        const reservation = db
+          .prepare('SELECT state, amount_minor FROM reservations WHERE intent_id = ?')
+          .get('int_smoke_pen_001') as { state: string; amount_minor: number } | undefined;
+        db.close();
+
+        if (reservation?.state !== 'HELD') {
+          throw new Error(`Expected reservation state HELD but found ${reservation?.state}`);
+        }
+
         results.push({
           step: 3,
-          name: 'ALLOW Intent Auto-Capture (POST /v1/intents/propose)',
+          name: 'ALLOW Intent Creation & Buyer Approval Routing (POST /v1/intents/propose)',
           status: 'PASS',
           durationMs: Date.now() - t3Start,
-          details: `HTTP 200 OK — verdict=ALLOW, order_id=${body.order_id}, capture_id=${body.capture_id}`,
+          details: `HTTP 200 OK — verdict=ALLOW, status=AWAITING_PAYER_APPROVAL, order_id=${body.order_id}, approve_url=${body.approve_url}, reservation=HELD`,
         });
       } else {
         throw new Error(`Unexpected propose result: HTTP ${res.status} ${JSON.stringify(body)}`);
@@ -208,7 +221,7 @@ async function runSmokeSuite(): Promise<boolean> {
       allPassed = false;
       results.push({
         step: 3,
-        name: 'ALLOW Intent Auto-Capture (POST /v1/intents/propose)',
+        name: 'ALLOW Intent Creation & Buyer Approval Routing (POST /v1/intents/propose)',
         status: 'FAIL',
         durationMs: Date.now() - t3Start,
         details: String(err),
@@ -216,7 +229,7 @@ async function runSmokeSuite(): Promise<boolean> {
     }
 
     // ------------------------------------------------------------------------
-    // Step 4: Propose STEP_UP Intent & Approve via HTTP
+    // Step 4: Propose STEP_UP Intent & Owner Authorization
     // ------------------------------------------------------------------------
     const t4Start = Date.now();
     try {
@@ -256,7 +269,7 @@ async function runSmokeSuite(): Promise<boolean> {
         throw new Error(`Propose did not yield STEP_UP: HTTP ${propRes.status} ${JSON.stringify(propBody)}`);
       }
 
-      // 4b: Approve
+      // 4b: Approve by owner
       const appRes = await fetch(`${BASE_URL}/v1/intents/${propBody.intent_id}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -265,20 +278,32 @@ async function runSmokeSuite(): Promise<boolean> {
       const appBody = (await appRes.json()) as {
         status: string;
         order_id?: string;
-        capture_id?: string;
+        approve_url?: string;
       };
 
       if (
         appRes.status === 200 &&
-        (appBody.status === 'CAPTURED' || appBody.status === 'AWAITING_PAYER_APPROVAL') &&
-        appBody.order_id
+        appBody.status === 'AWAITING_PAYER_APPROVAL' &&
+        appBody.order_id &&
+        appBody.approve_url
       ) {
+        // Assert reservation state is HELD in database
+        const db = openDb(SMOKE_DB_PATH);
+        const reservation = db
+          .prepare('SELECT state, amount_minor FROM reservations WHERE intent_id = ?')
+          .get('int_smoke_lamp_002') as { state: string; amount_minor: number } | undefined;
+        db.close();
+
+        if (reservation?.state !== 'HELD') {
+          throw new Error(`Expected reservation state HELD but found ${reservation?.state}`);
+        }
+
         results.push({
           step: 4,
-          name: 'STEP_UP Intent & Approval (POST /approve)',
+          name: 'STEP_UP Intent Propose & Owner Authorization (POST /approve)',
           status: 'PASS',
           durationMs: Date.now() - t4Start,
-          details: `HTTP 200 OK — STEP_UP verified, order_id=${appBody.order_id}, status=${appBody.status}`,
+          details: `HTTP 200 OK — STEP_UP authorized, status=AWAITING_PAYER_APPROVAL, order_id=${appBody.order_id}, approve_url=${appBody.approve_url}, reservation=HELD`,
         });
       } else {
         throw new Error(`Approval failed: HTTP ${appRes.status} ${JSON.stringify(appBody)}`);
@@ -287,7 +312,7 @@ async function runSmokeSuite(): Promise<boolean> {
       allPassed = false;
       results.push({
         step: 4,
-        name: 'STEP_UP Intent & Approval (POST /approve)',
+        name: 'STEP_UP Intent Propose & Owner Authorization (POST /approve)',
         status: 'FAIL',
         durationMs: Date.now() - t4Start,
         details: String(err),

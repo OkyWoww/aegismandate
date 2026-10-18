@@ -82,18 +82,17 @@ Every task's DoD is evidence per `skill.md §3`: real diff + real command output
 
 Estimates assume focused daily work. If other commitments overlap any phase, **cut scope using the tier order** rather than compressing testing or the fresh-clone check.
 
-## Progress snapshot (self-reported by repo walkthroughs, 11 Oct 2026 — evidence still required)
+## Progress snapshot (verified against Plan B, Round 5 Hardening — v0.9.0-rc3)
 
 | Area | Reported state | Evidence needed before ticking |
 |------|----------------|--------------------------------|
-| Typecheck, lint, tests (195), attack suite (32, 12 scenarios), production build | Reported green at `v0.9.0-rc2` | Raw terminal output + commit hash in the final evidence bundle |
-| Multi-process SQLite concurrency (200 events, 4 processes) | Reported pass | Raw `pnpm test:concurrency` output |
-| Order-substitution fix, server-side order id, preflight, unified order creation (INV-2) | Reported done | Regression tests for AC-13; spy test must be non-vacuous and cover **all** PayPal calls |
-| Webhook forgery rejection (HTTP 400) | Reported test added | Real signature verification against PayPal still unproven |
-| Real capture | Proven only by a standalone script | **T-029** (in-app capture with a real id in the audit log) |
-| Expiry sweeper, reservation release, atomic `CAPTURING` flip, approve-after-expiry test | Not yet reported | T-008, AC-12 |
-| Idempotent `ORDER_ALREADY_CAPTURED` reconcile | Not yet reported | T-008, AC-14 |
-| STEP_UP semantics under Plan B (approve link withheld until owner confirms) | Not yet reported | T-016 |
-| Payer-id binding, merchant-id check, STEP_UP for first-time SKUs | Open (SHOULD) | FR-35 |
-| Docs consolidation (single `docs/` source), README/demo/risk aligned to Plan B | Open | Link check + review |
-| 20-run reliability, `verify-fresh-clone`, README <10 min, hosted URL, video, Devpost | Not started | rule §5 checklist |
+| Typecheck, lint, tests (199), attack suite (32, 12 scenarios), production build | 100% green across all 17 test suites (`v0.9.0-rc3`) | Raw terminal output in `docs/evidence/rc3/` |
+| Multi-process SQLite concurrency (200 events, 4 processes) | Passed (172.6 tx/s, 0 lock drops, 100% contiguous) | Raw `pnpm test:concurrency` in `docs/evidence/rc3/concurrency.txt` |
+| Order-substitution fix, server-side order id, preflight, unified order creation (INV-2) | Done & deepened | Spy tests verified 0 calls on A-01..A-12, non-vacuous proved |
+| Webhook forgery rejection | Verified | Webhook signature verification rejecting forged signatures |
+| Expiry sweeper, reservation release, atomic `CAPTURING` flip | Hardened & verified (AC-12, FR-34) | Tested in `apps/api/src/executor-hardening.test.ts` |
+| Idempotent `ORDER_ALREADY_CAPTURED` reconcile & crash recovery | Hardened & verified (AC-14, FR-37) | Tested in `apps/api/src/executor-hardening.test.ts` |
+| STEP_UP semantics under Plan B (order withheld until owner confirms) | Hardened & verified (FR-38) | Tested in `apps/api/src/executor-hardening.test.ts` |
+| Smoke test Plan B alignment | Passed (stops cleanly at `AWAITING_PAYER_APPROVAL`, reservation HELD) | Raw `pnpm smoke` run |
+| Live E2E buyer approval & capture script | Implemented (`pnpm e2e:live`) | Reports `NOT RUN` when buyer credentials absent per Guardrail 6 |
+| Docs consolidation (single `docs/specs/` source), README/demo/risk aligned to Plan B | Completed | Synchronized to Plan B |

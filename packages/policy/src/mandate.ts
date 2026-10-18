@@ -62,7 +62,14 @@ export function isMandateExpired(
       ? new Date(clock).getTime()
       : clock.getTime();
 
-  const validUntilTime = new Date(mandate.valid_until).getTime();
+  const validUntilTime = typeof mandate.valid_until === 'number'
+    ? mandate.valid_until
+    : Date.parse(mandate.valid_until);
+
+  if (Number.isNaN(checkTime) || Number.isNaN(validUntilTime)) {
+    return true; // Fail closed if unparseable
+  }
+
   return checkTime >= validUntilTime;
 }
 

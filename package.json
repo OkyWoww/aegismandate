@@ -19,7 +19,7 @@
     "test:concurrency": "tsx scripts/concurrency-bench.ts",
     "attack-suite": "vitest run packages/sim",
     "smoke": "tsx scripts/smoke.ts",
-    "e2e:live": "tsx scripts/live-e2e.ts",
+    "e2e:live": "tsx --env-file=.env scripts/live-e2e.ts",
     "seed": "tsx scripts/seed.ts",
     "verify-fresh-clone": "bash scripts/verify-fresh-clone.sh"
   },
@@ -47,6 +47,7 @@
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "eslint": "8.57.1",
+    "playwright": "^1.64.1",
     "prettier": "^3.9.9",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",

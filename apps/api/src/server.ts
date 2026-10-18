@@ -389,6 +389,13 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
   });
 
+  app.post<{
+    Params: { id: string };
+    Body?: { expected_payload_hash?: string };
+  }>('/v1/intents/:id/capture', async (request, reply) => {
+    return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
+  });
+
   app.get('/v1/approvals', async () => {
     const nowTs = getNow();
     sweepExpiredIntents(db, mandateService, nowTs);

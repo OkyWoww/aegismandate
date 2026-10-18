@@ -1,3 +1,5 @@
+import 'dotenv/config';
+
 /**
  * MandatePay Live Sandbox End-to-End Buyer Approval & Capture (Task T-017)
  *
@@ -11,7 +13,6 @@
  * Mock runs print "MOCK" and never count as live evidence.
  */
 
-import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDb } from '../packages/audit/src/index.js';
@@ -156,25 +157,105 @@ async function main() {
     const page = await context.newPage();
 
     try {
-      await page.goto(propBody.approve_url, { waitUntil: 'networkidle' });
+      console.log('      Navigating to PayPal approval URL...');
+      await page.goto(propBody.approve_url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      console.log(`      Current URL: ${page.url()}`);
+      console.log(`      Page title: ${await page.title()}`);
 
-      // Handle PayPal Sandbox login
-      if (await page.locator('#email').isVisible()) {
-        await page.fill('#email', buyerEmail);
-        await page.click('#btnNext');
-        await page.fill('#password', buyerPassword);
-        await page.click('#btnLogin');
+      // Handle cookie consent if present
+      try {
+        const acceptCookie = page.locator('#acceptAllButton, button:has-text("Accept Cookies"), #banner-accept');
+        if (await acceptCookie.isVisible({ timeout: 2000 })) {
+          await acceptCookie.click();
+          await page.waitForTimeout(1000);
+        }
+      } catch {
+        // no cookie banner
       }
 
-      // Handle approval consent button
-      await page.waitForSelector('#payment-submit-btn, [data-testid="submit-button"], button:has-text("Complete Purchase"), button:has-text("Agree & Pay")', {
+      // Check if email field is present (direct login form)
+      const emailSelector = '#email, input[type="email"], input[name="login_email"]';
+      try {
+        await page.waitForSelector(emailSelector, { timeout: 10000 });
+      } catch {
+        console.log('      Email selector not immediately found, checking page state...');
+      }
+
+      if (await page.locator(emailSelector).first().isVisible()) {
+        console.log('      Filling buyer email credentials...');
+        await page.locator(emailSelector).first().fill(buyerEmail);
+        
+        // Check for Next button (two-step login) or direct password
+        const nextBtn = page.locator('#btnNext, button:has-text("Next")');
+        if (await nextBtn.isVisible({ timeout: 2000 })) {
+          await nextBtn.click();
+          await page.waitForTimeout(2000);
+        }
+
+        const pwdSelector = '#password, input[type="password"], input[name="login_password"]';
+        await page.waitForSelector(pwdSelector, { timeout: 15000 });
+        console.log('      Filling buyer password...');
+        await page.locator(pwdSelector).first().fill(buyerPassword);
+
+        const loginBtn = page.locator('#btnLogin, button:has-text("Log In")');
+        await loginBtn.first().click();
+        console.log('      Submitted login credentials, awaiting redirect...');
+        await page.waitForLoadState('domcontentloaded');
+        await page.waitForTimeout(5000);
+      }
+
+      console.log(`      Post-login URL: ${page.url()}`);
+
+      // Handle approval consent button (supports English and Indonesian PayPal locales)
+      const submitSelector = [
+        '#payment-submit-btn',
+        '[data-testid="submit-button"]',
+        'button:has-text("Lanjutkan untuk Memeriksa Pesanan")',
+        'button:has-text("Lanjutkan")',
+        'button:has-text("Memeriksa Pesanan")',
+        'button:has-text("Setuju & Bayar")',
+        'button:has-text("Selesaikan Pembelian")',
+        'button:has-text("Bayar Sekarang")',
+        'button:has-text("Complete Purchase")',
+        'button:has-text("Agree & Pay")',
+        'button:has-text("Continue")',
+        'button:has-text("Pay Now")',
+      ].join(', ');
+
+      console.log('      Waiting for approval consent button...');
+      await page.waitForSelector(submitSelector, {
         timeout: 30000,
       });
 
-      const submitBtn = page.locator('#payment-submit-btn, [data-testid="submit-button"], button:has-text("Complete Purchase"), button:has-text("Agree & Pay")').first();
+      const submitBtn = page.locator(submitSelector).first();
+      console.log('      Clicking approval consent button...');
       await submitBtn.click();
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(5000);
+
+      // Check if a second confirmation button appears (e.g. "Bayar Sekarang" or "Complete Purchase")
+      try {
+        const secondSubmit = page.locator(submitSelector).first();
+        if (await secondSubmit.isVisible({ timeout: 4000 })) {
+          console.log('      Clicking secondary confirmation button...');
+          await secondSubmit.click();
+          await page.waitForTimeout(4000);
+        }
+      } catch {
+        // no second confirmation needed
+      }
+
       console.log('      Buyer approval completed successfully.');
+    } catch (pwErr) {
+      const errScreenshotPath = path.resolve(process.cwd(), './data/e2e-error.png');
+      try {
+        await page.screenshot({ path: errScreenshotPath, fullPage: true });
+        console.log(`      [Debug Screenshot saved]: ${errScreenshotPath}`);
+        console.log(`      [Debug URL]: ${page.url()}`);
+      } catch {
+        // ignore screenshot errors
+      }
+      throw pwErr;
     } finally {
       await browser.close();
     }
@@ -224,7 +305,10 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error('[E2E Live Error]:', redactSensitive(String(err)));
+  if (err instanceof Error && 'cause' in err && err.cause) {
+    console.error('[E2E Live Cause]:', err.cause);
+  }
   process.exit(1);
 });

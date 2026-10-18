@@ -5,7 +5,7 @@ import { PayPalClient } from '@mandatepay/paypal';
 import type { Mandate, PurchaseIntent, PolicyDecision } from '@mandatepay/schemas';
 
 export interface ControlPlaneService {
-  evaluateIntent: (mandate: Mandate, intent: PurchaseIntent, currentSpend: number) => PolicyDecision;
+  evaluateIntent: (mandate: Mandate, intent: PurchaseIntent, currentSpend: number, now?: string) => PolicyDecision;
   scanPayload: (text: string) => ReturnType<typeof scanAdvisoryText>;
   verifyLedger: (events: Parameters<typeof verifyLedgerIntegrity>[0]) => ReturnType<typeof verifyLedgerIntegrity>;
   paypalClient: PayPalClient;
@@ -13,7 +13,13 @@ export interface ControlPlaneService {
 
 export function createControlPlane(payPalConfig: ConstructorParameters<typeof PayPalClient>[0]): ControlPlaneService {
   return {
-    evaluateIntent: (mandate, intent, currentSpend) => evaluatePolicy({ mandate, intent, cumulativeSpendToDate: currentSpend }),
+    evaluateIntent: (mandate, intent, currentSpend, now) =>
+      evaluatePolicy({
+        mandate,
+        intent,
+        cumulativeSpendToDate: currentSpend,
+        evaluatedAt: now ?? mandate.valid_from,
+      }),
     scanPayload: (text) => scanAdvisoryText(text),
     verifyLedger: (events) => verifyLedgerIntegrity(events),
     paypalClient: new PayPalClient(payPalConfig),

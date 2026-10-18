@@ -110,7 +110,7 @@ Webhook events handled: `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`, 
 |------------|--------|------|-------|
 | Orders create+capture works in sandbox with a sandbox merchant as payee | Create/get verified live; capture verified live after buyer approval via standalone script; unified in-app capture implemented (`captureApprovedOrder`) | 2026-10-12 | Plan B flow, v0.9.0-rc3 |
 | Vault v3 (saved payment token) usable in sandbox for off-session capture | Not pursued: setup-token returned `PAYER_ACTION_REQUIRED`; off-session capture not demonstrated | 2026-10-11 | Plan B locked |
-| Webhook signature verification endpoint works with sandbox webhook id | Verified in `packages/paypal` with signature validation & rejection of forged signatures | 2026-10-12 | INV-10 |
+| Webhook signature verification endpoint works with sandbox webhook id | NOT VERIFIED against live PayPal endpoint; mock verifier simulation only | 2026-10-18 | INV-10 (Simulation only) |
 | Disputes can be created in sandbox (buyer resolution center) and fetched via API | Seeded / pending manual dispute injection in sandbox | 2026-10-12 | S1 module |
 | Expiry sweeper & idempotent capture | Sweeper releasing unapproved HELD reservations & idempotent `ORDER_ALREADY_CAPTURED` recovery verified | 2026-10-12 | FR-34, FR-37, AC-12, AC-14 |
 

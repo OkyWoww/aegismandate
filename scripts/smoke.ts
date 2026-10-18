@@ -53,9 +53,14 @@ async function runSmokeSuite(): Promise<boolean> {
   const startTime = Date.now();
   const results: SmokeStepResult[] = [];
 
+  const clientId = process.env['PAYPAL_CLIENT_ID'];
+  const isMock = !clientId || clientId.startsWith('sandbox_client_id_dev') || process.env['PAYPAL_MOCK'] === 'true';
+  const modeLabel = isMock ? 'MODE: MOCK' : 'MODE: LIVE SANDBOX';
+
   console.log('='.repeat(80));
-  console.log(' MANDATEPAY END-TO-END AUTOMATED SMOKE VERIFIER (T-016)');
+  console.log(` MANDATEPAY AUTOMATED SMOKE VERIFIER (T-016) — ${modeLabel}`);
   console.log('='.repeat(80));
+  console.log(`[Execution Mode]                   ${modeLabel}`);
   console.log(`[Config] Target Ephemeral Endpoint: ${BASE_URL}`);
   console.log(`[Config] Isolated SQLite DB:       ${SMOKE_DB_PATH}`);
   console.log('-'.repeat(80));

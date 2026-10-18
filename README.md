@@ -203,8 +203,7 @@ Every architectural invariant in AegisMandate is backed by an automated test sui
 | **INV-6** | Fail-closed security: any error or timeout defaults to `DENY` | Strict Zod validation & catch-all deny | [`packages/schemas/src/index.test.ts`](packages/schemas/src/index.test.ts), A-05, A-06 |
 | **INV-7** | No PayPal call without valid `ALLOW` or approved `STEP_UP` | Execution-time recheck & TOCTOU lock (`FR-29`) | [`apps/api/src/executor-hardening.test.ts`](apps/api/src/executor-hardening.test.ts), A-09 |
 | **INV-8** | `captured + reserved ≤ total_budget` across concurrent requests | SQLite `BEGIN IMMEDIATE` atomic reservation | [`packages/audit/src/index.test.ts`](packages/audit/src/index.test.ts), A-04, A-11 |
-| **INV-9** | Tamper-evident audit trail chained with SHA-256 | Hash chaining (`sha256(prev || canonical_json)`) | [`packages/audit/src/index.test.ts`](packages/audit/src/index.test.ts) |
-| **INV-10**| Webhooks trusted only after cryptographic PayPal signature verification | `/v1/notifications/verify-webhook-signature` | [`apps/api/src/server.test.ts`](apps/api/src/server.test.ts) |
+| **INV-10**| Webhooks trusted only after cryptographic signature verification (Note: live PayPal webhook endpoint unproven; mock verifier simulation in test) | `/v1/notifications/verify-webhook-signature` | [`apps/api/src/server.test.ts`](apps/api/src/server.test.ts) |
 | **INV-11**| Injection scanner heuristics are advisory defense-in-depth | Advisory signals; structural rules hold even with scanner score 0 | [`packages/sim/src/attack-suite.test.ts`](packages/sim/src/attack-suite.test.ts), A-01..A-12 |
 | **INV-12**| Sandbox execution guard: default configurations strictly require Sandbox | `PayPalClient` environment assertions | [`packages/paypal/src/index.test.ts`](packages/paypal/src/index.test.ts) |
 
@@ -271,7 +270,7 @@ aegismandate/
 | Task ID | Milestone | Status | Description | Spec Ref |
 |---|---|:---:|---|---|
 | **T-001** | **Repo Bootstrap** | 🟢 COMPLETED | Monorepo layout, strict TS, ESLint boundaries (`agent` ↛ `paypal`), CI | `tech §2` |
-| **T-002** | **PayPal Sandbox Spike** | 🟢 COMPLETED | Orders v2 typed client, Webhook verify, Vault spike, Plan B locked | `tech §4` |
+| **T-002** | **PayPal Sandbox Spike** | 🟢 COMPLETED | Orders v2 typed client, mock Webhook verify (live webhook unproven), Vault spike, Plan B locked | `tech §4` |
 | **T-003** | **Shared Schemas (Zod)** | 🟢 COMPLETED | Strict Zod schemas for Mandate, Proposal, Decision, Audit | `spec §3` |
 | **T-004** | **Audit Ledger Package** | 🟢 COMPLETED | Hash-chained ledger (`better-sqlite3`, WAL mode, BEGIN IMMEDIATE, 200 concurrency) | `spec §2` |
 | **T-005** | **Mandate Service** | 🟢 COMPLETED | Lifecycle management (create, activate, revoke, suspend), HMAC-SHA256 | `spec §2` |

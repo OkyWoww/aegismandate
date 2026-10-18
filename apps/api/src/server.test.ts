@@ -809,7 +809,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     expect(JSON.parse(forgeRes.body).error).toBe('INVALID_WEBHOOK_SIGNATURE');
   });
 
-  it('AC-6 / INV-10: Spoofed PayPal webhooks are rejected with 400 INVALID_WEBHOOK_SIGNATURE when signature verification fails', async () => {
+  it('AC-6 / INV-10: Spoofed PayPal webhooks are rejected with 400 INVALID_WEBHOOK_SIGNATURE when mock verifier returns FAILURE', async () => {
     webhookVerificationResult = 'FAILURE';
     const spoofedWebhookPayload = {
       id: 'WH-SPOOFED-ATTACK-01',

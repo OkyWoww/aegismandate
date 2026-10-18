@@ -163,10 +163,11 @@ export function sweepExpiredIntents(
 
   const candidates = db
     .prepare(
-      `SELECT intent_id, order_id, expires_at FROM executed_intents
-       WHERE status = 'AWAITING_PAYER_APPROVAL' AND expires_at IS NOT NULL`,
+      `SELECT intent_id, order_id, expires_at, status, verdict FROM executed_intents
+       WHERE (status = 'AWAITING_PAYER_APPROVAL' OR (status = 'APPROVED' AND verdict = 'STEP_UP'))
+         AND expires_at IS NOT NULL`,
     )
-    .all() as Array<{ intent_id: string; order_id: string | null; expires_at: string }>;
+    .all() as Array<{ intent_id: string; order_id: string | null; expires_at: string; status: string; verdict: string }>;
 
   const expiredIds: string[] = [];
 
@@ -177,21 +178,28 @@ export function sweepExpiredIntents(
 
     withImmediateTransaction(db, () => {
       const row = db
-        .prepare('SELECT status, expires_at, order_id FROM executed_intents WHERE intent_id = ?')
-        .get(candidate.intent_id) as { status: string; expires_at: string; order_id: string | null } | undefined;
+        .prepare('SELECT status, verdict, expires_at, order_id FROM executed_intents WHERE intent_id = ?')
+        .get(candidate.intent_id) as { status: string; verdict: string; expires_at: string; order_id: string | null } | undefined;
 
-      if (!row || row.status !== 'AWAITING_PAYER_APPROVAL' || !isExpiredEpoch(row.expires_at, currentNow)) {
+      if (
+        !row ||
+        (row.status !== 'AWAITING_PAYER_APPROVAL' && !(row.status === 'APPROVED' && row.verdict === 'STEP_UP')) ||
+        !isExpiredEpoch(row.expires_at, currentNow)
+      ) {
         return; // Already processed or concurrent capture won
       }
 
+      const timeoutReason = row.verdict === 'STEP_UP' ? 'STEP_UP_TIMEOUT' : 'PAYER_APPROVAL_TIMEOUT';
+      const releaseMsg = row.verdict === 'STEP_UP' ? 'Step-up approval timeout exceeded' : 'Approval timeout exceeded';
+
       const res = mandateService.getReservation(candidate.intent_id);
       if (res && res.state === 'HELD') {
-        mandateService.releaseReservation(candidate.intent_id, 'Approval timeout exceeded');
+        mandateService.releaseReservation(candidate.intent_id, releaseMsg);
       }
 
       db.prepare(
-        "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'PAYER_APPROVAL_TIMEOUT', updated_at = ? WHERE intent_id = ?",
-      ).run(currentNow, candidate.intent_id);
+        "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = ?, updated_at = ? WHERE intent_id = ?",
+      ).run(timeoutReason, currentNow, candidate.intent_id);
 
       appendAuditEvent(db, {
         actor: 'control_plane',
@@ -202,6 +210,7 @@ export function sweepExpiredIntents(
           order_id: row.order_id,
           expires_at: row.expires_at,
           expired_at: currentNow,
+          reason: timeoutReason,
         },
         ts: currentNow,
       });
@@ -215,7 +224,7 @@ export function sweepExpiredIntents(
 
 /**
  * Lazy check on intent/approve calls (FR-34, AC-12).
- * If unapproved order has passed expires_at (epoch comparison), transitions to EXPIRED, releases reservation, and logs audit.
+ * If unapproved order or pending step-up has passed expires_at (epoch comparison), transitions to EXPIRED, releases reservation, and logs audit.
  */
 export function checkAndExpireIntent(
   db: DatabaseConnection,
@@ -228,21 +237,29 @@ export function checkAndExpireIntent(
 
   return withImmediateTransaction(db, () => {
     const row = db
-      .prepare('SELECT status, expires_at, order_id FROM executed_intents WHERE intent_id = ?')
-      .get(intentId) as { status: string; expires_at: string | null; order_id: string | null } | undefined;
+      .prepare('SELECT status, verdict, expires_at, order_id FROM executed_intents WHERE intent_id = ?')
+      .get(intentId) as { status: string; verdict: string; expires_at: string | null; order_id: string | null } | undefined;
 
-    if (!row || row.status !== 'AWAITING_PAYER_APPROVAL' || !row.expires_at || !isExpiredEpoch(row.expires_at, currentNow)) {
+    if (
+      !row ||
+      (row.status !== 'AWAITING_PAYER_APPROVAL' && !(row.status === 'APPROVED' && row.verdict === 'STEP_UP')) ||
+      !row.expires_at ||
+      !isExpiredEpoch(row.expires_at, currentNow)
+    ) {
       return false;
     }
 
+    const timeoutReason = row.verdict === 'STEP_UP' ? 'STEP_UP_TIMEOUT' : 'PAYER_APPROVAL_TIMEOUT';
+    const releaseMsg = row.verdict === 'STEP_UP' ? 'Step-up approval timeout exceeded' : 'Approval timeout exceeded';
+
     const res = mandateService.getReservation(intentId);
     if (res && res.state === 'HELD') {
-      mandateService.releaseReservation(intentId, 'Approval timeout exceeded');
+      mandateService.releaseReservation(intentId, releaseMsg);
     }
 
     db.prepare(
-      "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'PAYER_APPROVAL_TIMEOUT', updated_at = ? WHERE intent_id = ?",
-    ).run(currentNow, intentId);
+      "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = ?, updated_at = ? WHERE intent_id = ?",
+    ).run(timeoutReason, currentNow, intentId);
 
     appendAuditEvent(db, {
       actor: 'control_plane',
@@ -253,6 +270,7 @@ export function checkAndExpireIntent(
         order_id: row.order_id,
         expires_at: row.expires_at,
         expired_at: currentNow,
+        reason: timeoutReason,
       },
       ts: currentNow,
     });
@@ -674,10 +692,15 @@ export async function executeGoldenPath(
     }
 
     const endStatus = decision.verdict === 'STEP_UP' ? 'APPROVED' : 'DENIED';
+    const stepUpTimeout = mandate?.step_up?.timeout_seconds ?? 300;
+    const stepUpExpiresAt = decision.verdict === 'STEP_UP'
+      ? new Date(new Date(now).getTime() + stepUpTimeout * 1000).toISOString()
+      : null;
+
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
@@ -689,6 +712,7 @@ export async function executeGoldenPath(
       null,
       computedPayloadHash,
       decision.reason_codes.join(','),
+      stepUpExpiresAt,
       now,
       now,
     );
@@ -1093,14 +1117,16 @@ export async function captureApprovedOrder(
 
     // Lazy check on approval TTL with numeric epoch comparison (FR-34, AC-12, NFR-6)
     if (row.expires_at && isExpiredEpoch(row.expires_at, now)) {
+      const timeoutReason = row.verdict === 'STEP_UP' ? 'STEP_UP_TIMEOUT' : 'PAYER_APPROVAL_TIMEOUT';
+      const releaseMsg = row.verdict === 'STEP_UP' ? 'Step-up approval timeout exceeded' : 'Approval timeout exceeded';
       if (row.status !== 'EXPIRED') {
         const res = mandateService.getReservation(intentId);
         if (res && res.state === 'HELD') {
-          mandateService.releaseReservation(intentId, 'Approval timeout exceeded');
+          mandateService.releaseReservation(intentId, releaseMsg);
         }
         db.prepare(
-          "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'PAYER_APPROVAL_TIMEOUT', updated_at = ? WHERE intent_id = ?",
-        ).run(now, intentId);
+          "UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = ?, updated_at = ? WHERE intent_id = ?",
+        ).run(timeoutReason, now, intentId);
         appendAuditEvent(db, {
           actor: 'control_plane',
           type: 'INTENT_EXPIRED',
@@ -1110,15 +1136,17 @@ export async function captureApprovedOrder(
             order_id: row.order_id,
             expires_at: row.expires_at,
             expired_at: now,
+            reason: timeoutReason,
           },
           ts: now,
         });
       }
-      return { ok: false, status: 'EXPIRED' as const, reason: 'PAYER_APPROVAL_TIMEOUT' };
+      return { ok: false, status: 'EXPIRED' as const, reason: timeoutReason };
     }
 
     if (row.status === 'EXPIRED') {
-      return { ok: false, status: 'EXPIRED' as const, reason: 'PAYER_APPROVAL_TIMEOUT' };
+      const timeoutReason = row.verdict === 'STEP_UP' ? 'STEP_UP_TIMEOUT' : 'PAYER_APPROVAL_TIMEOUT';
+      return { ok: false, status: 'EXPIRED' as const, reason: row.refusal_reason ?? timeoutReason };
     }
 
     if (row.status === 'FAILED' || row.status === 'DENIED' || row.status === 'REJECTED') {
@@ -1126,7 +1154,8 @@ export async function captureApprovedOrder(
     }
 
     if (!row.order_id) {
-      return { ok: false, status: 'FAILED' as const, reason: 'NO_ORDER_ID' };
+      const reason = row.verdict === 'STEP_UP' ? 'STEP_UP_NOT_CONFIRMED' : 'NO_ORDER_ID';
+      return { ok: false, status: 'FAILED' as const, reason };
     }
 
     // Assert reservation is HELD before allowing capture (FR-34, AC-12, INV-7)
@@ -1703,6 +1732,51 @@ export async function executeApprovedStepUp(
       orderId: row.order_id ?? undefined,
       captureId: row.capture_id ?? undefined,
       auditValid: true,
+    };
+  }
+
+  if (row.status === 'EXPIRED') {
+    return {
+      intentId,
+      mandateId: row.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'STEP_UP_TIMEOUT',
+      auditValid: true,
+    };
+  }
+
+  // Lazy check on step-up timeout
+  if (row.expires_at && isExpiredEpoch(row.expires_at, now)) {
+    const res = mandateService.getReservation(intentId);
+    if (res && res.state === 'HELD') {
+      mandateService.releaseReservation(intentId, 'Step-up approval timeout exceeded');
+    }
+    db.prepare("UPDATE executed_intents SET status = 'EXPIRED', refusal_reason = 'STEP_UP_TIMEOUT', updated_at = ? WHERE intent_id = ?").run(
+      now,
+      intentId,
+    );
+    appendAuditEvent(db, {
+      actor: 'control_plane',
+      type: 'INTENT_EXPIRED',
+      ref: intentId,
+      payload: {
+        intent_id: intentId,
+        order_id: null,
+        expires_at: row.expires_at,
+        expired_at: now,
+        reason: 'STEP_UP_TIMEOUT',
+      },
+      ts: now,
+    });
+    const vRes = verifyAuditLedger(db);
+    return {
+      intentId,
+      mandateId: row.mandate_id,
+      verdict: 'DENY',
+      status: 'FAILED',
+      refusalReason: 'STEP_UP_TIMEOUT',
+      auditValid: vRes.valid,
     };
   }
 

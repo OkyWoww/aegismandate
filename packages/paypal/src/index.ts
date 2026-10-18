@@ -255,7 +255,11 @@ export function createMockPayPalFetch(): typeof fetch {
       );
     }
 
-    // Webhook verification
+    // Webhook verification (MOCK ONLY)
+    // Note: 'forged' heuristic is used strictly for in-memory simulated unit/attack test cases
+    // where test scenarios intentionally pass invalid signatures to test failure branches.
+    // In live production, PayPal's REST API (/v1/notifications/verify-webhook-signature)
+    // cryptographically verifies the asymmetric signature against PayPal-hosted certificates.
     if (urlStr.includes('/v1/notifications/verify-webhook-signature')) {
       const body = init?.body ? String(init.body) : '';
       const isForged = body.toLowerCase().includes('forged');

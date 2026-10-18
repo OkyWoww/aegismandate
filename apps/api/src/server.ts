@@ -268,10 +268,11 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     }
 
     if (row.status === 'EXPIRED') {
+      const errCode = row.verdict === 'STEP_UP' ? 'STEP_UP_TIMEOUT' : 'PAYER_APPROVAL_TIMEOUT';
       return reply.code(422).send({
-        error: 'PAYER_APPROVAL_TIMEOUT',
-        message: 'Approval rejected: intent has expired and reservation was released (FR-34)',
-        refusal_reason: 'PAYER_APPROVAL_TIMEOUT',
+        error: errCode,
+        message: `Approval rejected: intent has expired (${errCode}) and reservation was released (FR-34)`,
+        refusal_reason: errCode,
       });
     }
 

@@ -397,7 +397,7 @@ describe('MandatePay Complete Attack Suite (Harness A-01 to A-12, spec.md §6, �
   // --------------------------------------------------------------------------
   // A-09: Forged PayPal Webhook (spec.md §7) (INV-10)
   // --------------------------------------------------------------------------
-  it('A-09: Forged PayPal Webhook is rejected and state remains unchanged (INV-10)', async () => {
+  it('A-09: Forged PayPal Webhook is rejected by mock verifier and state remains unchanged (INV-10)', async () => {
     const payPalClient = new PayPalClient({
       clientId: 'sandbox_client_id_webhook',
       clientSecret: 'sandbox_client_sec_webhook',

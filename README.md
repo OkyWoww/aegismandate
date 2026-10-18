@@ -23,6 +23,9 @@ Autonomous AI agents capable of browsing the web, selecting products, and comple
 2. **Untrusted Cognitive Plane (Agent Process)**: An autonomous shopping agent that interacts with stores and creates purchase *intents*, but is physically and architecturally barred from touching payment credentials or calling PayPal APIs.
 3. **Cryptographic & Hash-Chained Audit Ledger**: Every mandate issuance, intent submission, policy decision, and PayPal capture is recorded into a tamper-evident, SHA-256 hash-chained SQLite ledger.
 
+> [!NOTE]
+> **Pre-Release Verification Disclosure**: As specified in [`tech.md §4.3`](docs/specs/tech.md), webhook signature verification against live PayPal endpoints is **NOT VERIFIED** (validated via mock verifier simulation). In-app live capture (`T-029`) requires payer browser approval and is not verified unattended.
+
 ---
 
 ## 2. Architecture & Plane Isolation

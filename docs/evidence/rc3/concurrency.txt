@@ -11,10 +11,10 @@
 Launching 4 concurrent child processes...
 
 All worker processes completed successfully:
-  -> Worker 0: 50 transactions in 1055ms (47.4 tx/s)
-  -> Worker 1: 50 transactions in 1069ms (46.8 tx/s)
-  -> Worker 2: 50 transactions in 961ms (52.0 tx/s)
-  -> Worker 3: 50 transactions in 1010ms (49.5 tx/s)
+  -> Worker 0: 50 transactions in 1083ms (46.2 tx/s)
+  -> Worker 1: 50 transactions in 893ms (56.0 tx/s)
+  -> Worker 2: 50 transactions in 951ms (52.6 tx/s)
+  -> Worker 3: 50 transactions in 979ms (51.1 tx/s)
 
 Verifying database consistency and cryptographic integrity...
 
@@ -22,8 +22,8 @@ Verifying database consistency and cryptographic integrity...
  BENCHMARK RESULTS SUMMARY (100% PASS)
 ================================================================================
 Total Events Committed      : 200 / 200
-Total Elapsed Time          : 1085ms
-Effective Contention Rate   : 184.3 transactions/sec
+Total Elapsed Time          : 1084ms
+Effective Contention Rate   : 184.5 transactions/sec
 Unhandled SQLITE_BUSY Errors: 0 (Zero lock contention drops)
 Sequence Continuity Check   : 100% Contiguous (1..200, zero gaps, zero forks)
 SHA-256 Hash Chain Integrity: VALID (Unbroken cryptographic chain)

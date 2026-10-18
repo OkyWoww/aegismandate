@@ -5,38 +5,38 @@
 
 [1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mD:/mandatepay[39m
 
- [32m✓[39m packages/policy/src/property.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 273[2mms[22m[39m
- [32m✓[39m apps/web/src/App.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[32m 224[2mms[22m[39m
- [32m✓[39m apps/api/src/golden-path.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 488[2mms[22m[39m
+ [32m✓[39m apps/web/src/App.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[32m 151[2mms[22m[39m
+ [32m✓[39m apps/api/src/golden-path.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 518[2mms[22m[39m
    [32m✓[39m Golden Path End-to-End (Task T-007, AC-1, FR-12..15, FR-26) [2m(3)[22m
-     [33m[2m✓[22m[39m 20/20 Reliability Gate: Achieves 100% success across 20 consecutive golden path executions (product.md §7)[33m 345[2mms[22m[39m
- [32m✓[39m apps/api/src/executor-hardening.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 518[2mms[22m[39m
- [32m✓[39m apps/api/src/server.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1016[2mms[22m[39m
+     [33m[2m✓[22m[39m 20/20 Reliability Gate: Achieves 100% success across 20 consecutive golden path executions (product.md §7)[33m 325[2mms[22m[39m
+ [32m✓[39m apps/api/src/executor-hardening.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 598[2mms[22m[39m
+ [32m✓[39m packages/sim/src/attack-suite.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 255[2mms[22m[39m
+ [32m✓[39m apps/api/src/server.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1086[2mms[22m[39m
    [32m✓[39m Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4) [2m(10)[22m
-     [33m[2m✓[22m[39m GET /health returns 200 OK with timestamp[33m 343[2mms[22m[39m
- [32m✓[39m apps/api/src/mandate-service.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 352[2mms[22m[39m
- [32m✓[39m apps/api/src/agent-integration.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 240[2mms[22m[39m
+     [33m[2m✓[22m[39m GET /health returns 200 OK with timestamp[33m 361[2mms[22m[39m
+ [32m✓[39m packages/policy/src/property.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 302[2mms[22m[39m
+ [32m✓[39m apps/api/src/mandate-service.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 244[2mms[22m[39m
+ [32m✓[39m apps/api/src/agent-integration.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 152[2mms[22m[39m
+ [32m✓[39m apps/stores/src/index.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 101[2mms[22m[39m
  [32m✓[39m packages/audit/src/index.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 2107[2mms[22m[39m
    [32m✓[39m Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11 [2m(10)[22m
      [32m✓[39m Concurrency burst (AC-11) [2m(2)[22m
-       [33m[2m✓[22m[39m processes true multi-process concurrency burst (4 worker processes × 50 txns = 200 events) under real WAL lock contention[33m 1737[2mms[22m[39m
- [32m✓[39m apps/stores/src/index.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 127[2mms[22m[39m
- [32m✓[39m packages/sim/src/attack-suite.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 256[2mms[22m[39m
- [32m✓[39m packages/schemas/src/index.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 35[2mms[22m[39m
- [32m✓[39m packages/paypal/src/index.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 78[2mms[22m[39m
- [32m✓[39m packages/policy/src/engine.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 123[2mms[22m[39m
- [32m✓[39m packages/scanner/src/index.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 32[2mms[22m[39m
- [32m✓[39m packages/policy/src/mandate.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 22[2mms[22m[39m
- [32m✓[39m apps/agent/src/agent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 18[2mms[22m[39m
- [32m✓[39m packages/sim/src/boundary.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 2537[2mms[22m[39m
+       [33m[2m✓[22m[39m processes true multi-process concurrency burst (4 worker processes × 50 txns = 200 events) under real WAL lock contention[33m 1687[2mms[22m[39m
+ [32m✓[39m packages/scanner/src/index.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 38[2mms[22m[39m
+ [32m✓[39m packages/paypal/src/index.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 76[2mms[22m[39m
+ [32m✓[39m packages/policy/src/engine.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 105[2mms[22m[39m
+ [32m✓[39m packages/schemas/src/index.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m packages/policy/src/mandate.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m apps/agent/src/agent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m packages/sim/src/boundary.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 2284[2mms[22m[39m
    [32m✓[39m Architectural Boundary & Invariant Verifications (INV-1, AC-7) [2m(6)[22m
-     [33m[2m✓[22m[39m INV-1 / AC-7: apps/agent must NEVER import @mandatepay/paypal (ESLint path restriction)[33m 2501[2mms[22m[39m
+     [33m[2m✓[22m[39m INV-1 / AC-7: apps/agent must NEVER import @mandatepay/paypal (ESLint path restriction)[33m 2255[2mms[22m[39m
 
 [2m Test Files [22m [1m[32m17 passed[39m[22m[90m (17)[39m
 [2m      Tests [22m [1m[32m209 passed[39m[22m[90m (209)[39m
-[2m   Start at [22m 15:38:12
-[2m   Duration [22m 3.67s[2m (tests 53%, import 27%, transform 17%, worker 2%)[22m
+[2m   Start at [22m 15:46:34
+[2m   Duration [22m 3.55s[2m (tests 52%, import 27%, transform 19%, worker 2%)[22m
 
-[2m    Isolate [22m [33m17 workers spawned[39m[2m · ~373ms startup each (spawn + environment, per file)[22m
-[2m            [22m [2mat least ~532ms faster with [22m[33misolate: false[39m[2m — reuses workers across files instead of one per file[22m
+[2m    Isolate [22m [33m17 workers spawned[39m[2m · ~342ms startup each (spawn + environment, per file)[22m
+[2m            [22m [2mat least ~488ms faster with [22m[33misolate: false[39m[2m — reuses workers across files instead of one per file[22m
 

@@ -5,13 +5,13 @@
 
 [1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mD:/mandatepay[39m
 
- [32m✓[39m packages/sim/src/attack-suite.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 138[2mms[22m[39m
- [32m✓[39m packages/sim/src/boundary.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1433[2mms[22m[39m
+ [32m✓[39m packages/sim/src/attack-suite.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 144[2mms[22m[39m
+ [32m✓[39m packages/sim/src/boundary.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1386[2mms[22m[39m
    [32m✓[39m Architectural Boundary & Invariant Verifications (INV-1, AC-7) [2m(6)[22m
-     [33m[2m✓[22m[39m INV-1 / AC-7: apps/agent must NEVER import @mandatepay/paypal (ESLint path restriction)[33m 1401[2mms[22m[39m
+     [33m[2m✓[22m[39m INV-1 / AC-7: apps/agent must NEVER import @mandatepay/paypal (ESLint path restriction)[33m 1355[2mms[22m[39m
 
 [2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
 [2m      Tests [22m [1m[32m32 passed[39m[22m[90m (32)[39m
-[2m   Start at [22m 15:38:17
-[2m   Duration [22m 2.07s[2m (tests 60%, import 23%, transform 15%, worker 1%)[22m
+[2m   Start at [22m 15:46:39
+[2m   Duration [22m 2.03s[2m (tests 60%, import 23%, transform 16%, worker 1%)[22m
 

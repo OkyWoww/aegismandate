@@ -23,6 +23,7 @@ const E2E_PORT = Number(process.env.E2E_PORT || 3098);
 const E2E_HOST = '127.0.0.1';
 const E2E_DB_PATH = path.resolve(process.cwd(), './data/e2e-live-test.db');
 const HMAC_KEY = 'mandatepay_demo_hmac_secret_key_default_32chars_for_local_testing';
+const OWNER_TOKEN = process.env['OWNER_TOKEN'] || 'mandate_owner_secret_token_default';
 const BASE_URL = `http://${E2E_HOST}:${E2E_PORT}`;
 
 function redactSensitive(str: string): string {
@@ -31,28 +32,7 @@ function redactSensitive(str: string): string {
     .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi, '[REDACTED_EMAIL]');
 }
 
-interface PlaywrightPage {
-  goto: (url: string, opts?: { waitUntil?: string }) => Promise<unknown>;
-  locator: (sel: string) => {
-    isVisible: () => Promise<boolean>;
-    first: () => { click: () => Promise<void> };
-  };
-  fill: (sel: string, val: string) => Promise<void>;
-  click: (sel: string) => Promise<void>;
-  waitForSelector: (sel: string, opts?: { timeout?: number }) => Promise<unknown>;
-  waitForTimeout: (ms: number) => Promise<void>;
-}
-
-interface PlaywrightModule {
-  chromium: {
-    launch: (opts: { headless: boolean }) => Promise<{
-      newContext: () => Promise<{
-        newPage: () => Promise<PlaywrightPage>;
-      }>;
-      close: () => Promise<void>;
-    }>;
-  };
-}
+import type * as Playwright from 'playwright';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -81,10 +61,10 @@ async function main() {
   }
 
   // Check Playwright availability
-  let playwright: PlaywrightModule | undefined;
+  let playwright: typeof Playwright | undefined;
   try {
     const moduleName = 'playwright';
-    playwright = (await import(moduleName)) as unknown as PlaywrightModule;
+    playwright = (await import(moduleName)) as typeof Playwright;
   } catch {
     console.log('NOT RUN: Playwright is not installed in dependencies.');
     process.exit(0);
@@ -260,11 +240,14 @@ async function main() {
       await browser.close();
     }
 
-    // 3. Trigger Control Plane Capture
+    // 3. Trigger Control Plane Capture (Authorized with OWNER_TOKEN)
     console.log('[3/4] Triggering Control Plane capture flow...');
     const capRes = await fetch(`${BASE_URL}/v1/intents/${propBody.intent_id}/capture`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OWNER_TOKEN}`,
+      },
       body: JSON.stringify({}),
     });
 
@@ -308,10 +291,31 @@ async function main() {
       // keep raw string
     }
 
+    // 5. Query Control Plane GET /v1/audit/verify to assert valid: true and broken_seq: null
+    console.log('[5/5] Querying GET /v1/audit/verify for cryptographic chain integrity...');
+    const verifyRes = await fetch(`${BASE_URL}/v1/audit/verify`);
+    if (verifyRes.status !== 200) {
+      throw new Error(`Audit verify endpoint returned HTTP ${verifyRes.status}`);
+    }
+    const verifyBody = (await verifyRes.json()) as {
+      valid: boolean;
+      count: number;
+      broken_at_seq: number | null;
+      broken_seq: number | null;
+      reason: string | null;
+    };
+    console.log(`      Audit ledger verification: valid=${verifyBody.valid}, count=${verifyBody.count}, broken_seq=${verifyBody.broken_seq}`);
+    if (verifyBody.valid !== true || verifyBody.broken_seq !== null) {
+      throw new Error(
+        `Audit ledger verification failed: valid=${verifyBody.valid}, broken_seq=${verifyBody.broken_seq}, reason=${verifyBody.reason}`,
+      );
+    }
+
     console.log('='.repeat(80));
     console.log(' LIVE E2E VERIFICATION COMPLETED (PASS)');
     console.log(` Authentic Capture ID : ${capBody.capture_id}`);
     console.log(` Audit Event Ref      : ${propBody.intent_id}`);
+    console.log(` Audit Ledger Valid   : ${verifyBody.valid} (broken_seq=${verifyBody.broken_seq})`);
     console.log(' Audit Event (JSON)   :');
     console.log(JSON.stringify({
       seq: auditRow.seq,

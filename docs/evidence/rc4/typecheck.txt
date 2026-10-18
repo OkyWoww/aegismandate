@@ -1,0 +1,4 @@
+
+> aegismandate@0.9.0-rc3 typecheck D:\mandatepay
+> tsc -b
+

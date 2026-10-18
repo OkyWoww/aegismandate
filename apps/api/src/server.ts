@@ -1,4 +1,5 @@
-import fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import {
   type DatabaseConnection,
@@ -27,9 +28,82 @@ export interface ServerOptions {
   catalogResolver: StoreCatalogResolver;
   payPalClient: PayPalClient;
   hmacKey: string;
+  ownerToken?: string | undefined;
+  agentToken?: string | undefined;
   webhookId?: string | undefined;
   logger?: boolean | undefined;
   now?: (() => string) | undefined;
+}
+
+/**
+ * Constant-time string equality check to prevent timing side-channel attacks (INV-4).
+ */
+export function safeTokenCompare(provided: string | undefined, expected: string | undefined): boolean {
+  if (!provided || !expected) return false;
+  const hashProvided = createHash('sha256').update(provided).digest();
+  const hashExpected = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(hashProvided, hashExpected);
+}
+
+/**
+ * Extracts bearer token strictly from 'Authorization: Bearer <token>' header format.
+ * Returns null if missing, empty, or not starting with 'Bearer '.
+ */
+export function extractBearerToken(authHeader: string | undefined): string | null {
+  if (!authHeader) return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/);
+  if (!match || !match[1]) return null;
+  const token = match[1].trim();
+  return token.length > 0 ? token : null;
+}
+
+/**
+ * Enforces strict owner token allowlist on all human authorization endpoints (FR-18, FR-31, INV-4).
+ * - Missing/non-Bearer/invalid token => 401 Unauthorized
+ * - Agent token attempting human action => 403 Forbidden
+ * - Matching owner token => allowed
+ */
+export function authenticateOwner(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  tokens: { ownerToken?: string | undefined; agentToken?: string | undefined },
+): boolean {
+  const authHeader = request.headers['authorization'];
+  const token = extractBearerToken(authHeader);
+
+  if (!token) {
+    reply.code(401).send({
+      error: 'UNAUTHORIZED',
+      message: 'Authorization header with Bearer token is required (INV-4, FR-18)',
+      statusCode: 401,
+    });
+    return false;
+  }
+
+  const effectiveAgentToken = tokens.agentToken ?? process.env['AGENT_TOKEN'] ?? 'mandate_agent_secret_token_default';
+  const effectiveOwnerToken = tokens.ownerToken ?? process.env['OWNER_TOKEN'] ?? 'mandate_owner_secret_token_default';
+
+  // Explicitly reject agent tokens with 403 Forbidden
+  if (safeTokenCompare(token, effectiveAgentToken)) {
+    reply.code(403).send({
+      error: 'FORBIDDEN',
+      message: 'Agent tokens are forbidden from calling human authorization endpoints (FR-18, FR-31, INV-4)',
+      statusCode: 403,
+    });
+    return false;
+  }
+
+  // Allowlist: strictly verify matching owner token via timingSafeEqual
+  if (!safeTokenCompare(token, effectiveOwnerToken)) {
+    reply.code(401).send({
+      error: 'UNAUTHORIZED',
+      message: 'Invalid owner authorization token (INV-4, FR-18)',
+      statusCode: 401,
+    });
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -169,20 +243,20 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       .prepare('SELECT * FROM executed_intents WHERE intent_id = ?')
       .get(id) as
       | {
-          intent_id: string;
-          mandate_id: string;
-          verdict: string;
-          decision_json: string;
-          status: string;
-          order_id: string | null;
-          capture_id: string | null;
-          payload_hash: string | null;
-          refusal_reason: string | null;
-          approve_url: string | null;
-          expires_at: string | null;
-          created_at: string;
-          updated_at: string;
-        }
+        intent_id: string;
+        mandate_id: string;
+        verdict: string;
+        decision_json: string;
+        status: string;
+        order_id: string | null;
+        capture_id: string | null;
+        payload_hash: string | null;
+        refusal_reason: string | null;
+        approve_url: string | null;
+        expires_at: string | null;
+        created_at: string;
+        updated_at: string;
+      }
       | undefined;
 
     if (!row) {
@@ -243,8 +317,14 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   const handleApprove = async (
     id: string,
     expectedPayloadHash: string | undefined,
+    request: FastifyRequest | undefined,
     reply: FastifyReply,
   ) => {
+    // Enforce FR-18, FR-31, INV-4: Strict owner allowlist via timingSafeEqual
+    if (!request || !authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+      return;
+    }
+
     const nowTs = getNow();
 
     // Lazy check on approval timeout (FR-34, AC-12)
@@ -337,6 +417,15 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       });
     }
 
+    // FR-28 & Rule §2.1: Human approval of a STEP_UP intent MUST supply expected_payload_hash
+    if (!expectedPayloadHash || expectedPayloadHash.trim() === '') {
+      return reply.code(422).send({
+        error: 'PAYLOAD_HASH_REQUIRED',
+        message: 'Approval rejected: expected_payload_hash is required for STEP_UP approval (FR-28)',
+        refusal_reason: 'PAYLOAD_HASH_REQUIRED',
+      });
+    }
+
     const result = await executeApprovedStepUp({
       intentId: id,
       payPalClient,
@@ -386,17 +475,46 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     Params: { id: string };
     Body?: { expected_payload_hash?: string };
   }>('/v1/intents/:id/approve', async (request, reply) => {
-    return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
+    return handleApprove(request.params.id, request.body?.expected_payload_hash, request, reply);
   });
 
+  // Strict Capture Route: restricted only to intents that already have an order created (AWAITING_PAYER_APPROVAL / CAPTURING)
   app.post<{
     Params: { id: string };
     Body?: { expected_payload_hash?: string };
   }>('/v1/intents/:id/capture', async (request, reply) => {
-    return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
+    if (!authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+      return;
+    }
+    const { id } = request.params;
+    const nowTs = getNow();
+    checkAndExpireIntent(db, mandateService, id, nowTs);
+
+    const row = db
+      .prepare('SELECT status FROM executed_intents WHERE intent_id = ?')
+      .get(id) as { status: string } | undefined;
+
+    if (!row) {
+      return reply.code(404).send({
+        error: 'INTENT_NOT_FOUND',
+        message: `Intent '${id}' not found for capture`,
+      });
+    }
+
+    if (row.status !== 'AWAITING_PAYER_APPROVAL' && row.status !== 'CAPTURING' && row.status !== 'CAPTURED') {
+      return reply.code(400).send({
+        error: 'INVALID_STATUS',
+        message: `Intent '${id}' cannot be captured: status is '${row.status}' (expected 'AWAITING_PAYER_APPROVAL' or 'CAPTURING')`,
+      });
+    }
+
+    return handleApprove(id, request.body?.expected_payload_hash, request, reply);
   });
 
-  app.get('/v1/approvals', async () => {
+  app.get('/v1/approvals', async (request, reply) => {
+    if (!authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+      return;
+    }
     const nowTs = getNow();
     sweepExpiredIntents(db, mandateService, nowTs);
 
@@ -419,7 +537,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     Params: { id: string };
     Body?: { expected_payload_hash?: string };
   }>('/v1/approvals/:id/approve', async (request, reply) => {
-    return handleApprove(request.params.id, request.body?.expected_payload_hash, reply);
+    return handleApprove(request.params.id, request.body?.expected_payload_hash, request, reply);
   });
 
   // --------------------------------------------------------------------------
@@ -427,8 +545,14 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   // --------------------------------------------------------------------------
   const handleReject = async (
     id: string,
+    request: FastifyRequest | undefined,
     reply: FastifyReply,
   ) => {
+    // Enforce FR-18, FR-31, INV-4: Strict owner allowlist via timingSafeEqual
+    if (!request || !authenticateOwner(request, reply, { ownerToken: options.ownerToken, agentToken: options.agentToken })) {
+      return;
+    }
+
     const nowTs = getNow();
 
     const row = db
@@ -473,11 +597,11 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   };
 
   app.post<{ Params: { id: string } }>('/v1/intents/:id/reject', async (request, reply) => {
-    return handleReject(request.params.id, reply);
+    return handleReject(request.params.id, request, reply);
   });
 
   app.post<{ Params: { id: string } }>('/v1/approvals/:id/reject', async (request, reply) => {
-    return handleReject(request.params.id, reply);
+    return handleReject(request.params.id, request, reply);
   });
 
   // --------------------------------------------------------------------------
@@ -554,15 +678,15 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
          LIMIT ? OFFSET ?`,
       )
       .all(...params, limit, offset) as Array<{
-      seq: number;
-      ts: string;
-      actor: string;
-      type: string;
-      ref: string;
-      payload: string;
-      prev_hash: string;
-      hash: string;
-    }>;
+        seq: number;
+        ts: string;
+        actor: string;
+        type: string;
+        ref: string;
+        payload: string;
+        prev_hash: string;
+        hash: string;
+      }>;
 
     const events = rows.map((r) => {
       let parsedPayload: unknown = r.payload;
@@ -600,6 +724,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       valid: result.valid,
       count: result.count,
       broken_at_seq: result.brokenAtSeq ?? null,
+      broken_seq: result.brokenAtSeq ?? null,
       reason: result.reason ?? null,
     };
   });

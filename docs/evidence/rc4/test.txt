@@ -1,0 +1,40 @@
+
+> aegismandate@0.9.0-rc3 test D:\mandatepay
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mD:/mandatepay[39m
+
+ [32m✓[39m packages/policy/src/property.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 199[2mms[22m[39m
+ [32m✓[39m apps/api/src/golden-path.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 414[2mms[22m[39m
+ [32m✓[39m apps/api/src/agent-integration.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 121[2mms[22m[39m
+ [32m✓[39m apps/api/src/executor-hardening.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 501[2mms[22m[39m
+ [32m✓[39m apps/api/src/server.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 935[2mms[22m[39m
+   [32m✓[39m Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4) [2m(13)[22m
+     [33m[2m✓[22m[39m GET /health returns 200 OK with timestamp[33m 344[2mms[22m[39m
+ [32m✓[39m apps/web/src/App.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[32m 145[2mms[22m[39m
+ [32m✓[39m packages/policy/src/engine.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 111[2mms[22m[39m
+ [32m✓[39m apps/api/src/mandate-service.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 114[2mms[22m[39m
+ [32m✓[39m packages/audit/src/index.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1727[2mms[22m[39m
+   [32m✓[39m Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11 [2m(10)[22m
+     [32m✓[39m Concurrency burst (AC-11) [2m(2)[22m
+       [33m[2m✓[22m[39m processes true multi-process concurrency burst (4 worker processes × 50 txns = 200 events) under real WAL lock contention[33m 1493[2mms[22m[39m
+ [32m✓[39m packages/paypal/src/index.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 79[2mms[22m[39m
+ [32m✓[39m packages/sim/src/attack-suite.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 240[2mms[22m[39m
+ [32m✓[39m packages/schemas/src/index.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m packages/scanner/src/index.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 61[2mms[22m[39m
+ [32m✓[39m packages/policy/src/mandate.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m apps/stores/src/index.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 70[2mms[22m[39m
+ [32m✓[39m apps/agent/src/agent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m packages/sim/src/boundary.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 2223[2mms[22m[39m
+   [32m✓[39m Architectural Boundary & Invariant Verifications (INV-1, AC-7) [2m(6)[22m
+     [33m[2m✓[22m[39m INV-1 / AC-7: apps/agent must NEVER import @mandatepay/paypal (ESLint path restriction)[33m 2204[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m17 passed[39m[22m[90m (17)[39m
+[2m      Tests [22m [1m[32m213 passed[39m[22m[90m (213)[39m
+[2m   Start at [22m 20:34:44
+[2m   Duration [22m 3.14s[2m (tests 55%, import 27%, transform 16%, worker 2%)[22m
+
+[2m    Isolate [22m [33m17 workers spawned[39m[2m · ~375ms startup each (spawn + environment, per file)[22m
+[2m            [22m [2mat least ~536ms faster with [22m[33misolate: false[39m[2m — reuses workers across files instead of one per file[22m
+

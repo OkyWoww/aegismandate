@@ -122,6 +122,9 @@ function createTestCatalogResolver(db: DatabaseConnection): StoreCatalogResolver
 
 describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, §4)', () => {
   const mandateId = 'mnd_server_test_01';
+  const TEST_OWNER_TOKEN = 'test_owner_secret_token_123';
+  const TEST_AGENT_TOKEN = 'test_agent_secret_token_456';
+  const ownerAuthHeaders = { authorization: `Bearer ${TEST_OWNER_TOKEN}` };
   let db: DatabaseConnection;
   let mandateService: MandateService;
   let catalogResolver: StoreCatalogResolver;
@@ -293,6 +296,8 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       catalogResolver,
       payPalClient,
       hmacKey: TEST_HMAC_KEY,
+      ownerToken: TEST_OWNER_TOKEN,
+      agentToken: TEST_AGENT_TOKEN,
       webhookId: 'WH-TEST-CONFIGURED-ID',
       now: () => FIXED_NOW,
     });
@@ -396,6 +401,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const approveRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_pen_01/approve',
+      headers: ownerAuthHeaders,
     });
     expect(approveRes.statusCode).toBe(200);
     const approveBody = JSON.parse(approveRes.body);
@@ -526,6 +532,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const tamperedApproveRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_stepup_flow_01/approve',
+      headers: ownerAuthHeaders,
       payload: {
         expected_payload_hash: 'bad_tampered_payload_hash_value_1234567890abcdef',
       },
@@ -557,10 +564,18 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       payload: freshProposal,
     });
 
+    const flow02Row = db
+      .prepare('SELECT payload_hash FROM executed_intents WHERE intent_id = ?')
+      .get('int_http_stepup_flow_02') as { payload_hash: string };
+
     // 4. Valid human approval creates PayPal order and returns approve_url (FR-38)
     const validApproveRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_stepup_flow_02/approve',
+      headers: ownerAuthHeaders,
+      payload: {
+        expected_payload_hash: flow02Row.payload_hash,
+      },
     });
 
     expect(validApproveRes.statusCode).toBe(200);
@@ -575,6 +590,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const captureRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_stepup_flow_02/approve',
+      headers: ownerAuthHeaders,
     });
 
     expect(captureRes.statusCode).toBe(200);
@@ -604,6 +620,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const capturedPayload = JSON.parse(capturedEvent!.payload);
     expect(capturedPayload.capture_id).toBe('CAPTURE-HTTP-OK');
     expect(capturedPayload.order_id).toBe('ORDER-HTTP-OK');
+    expect(capturedPayload.payee_ref).toBe('merchant@demo-store.local');
 
     // 5. Priority 1: Prevent Order Substitution Vulnerability (Claude Round 4)
     // Client attempts to supply a foreign PayPal order ID in request body:
@@ -625,10 +642,16 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       payload: directOrderProposal,
     });
 
+    const directRow = db
+      .prepare('SELECT payload_hash FROM executed_intents WHERE intent_id = ?')
+      .get('int_http_stepup_direct_order') as { payload_hash: string };
+
     const directApproveRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_stepup_direct_order/approve',
+      headers: ownerAuthHeaders,
       payload: {
+        expected_payload_hash: directRow.payload_hash,
         paypal_order_id: 'ORDER-FOREIGN-ATTACKER',
       },
     });
@@ -642,6 +665,7 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     const directCaptureRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_stepup_direct_order/approve',
+      headers: ownerAuthHeaders,
     });
     expect(directCaptureRes.statusCode).toBe(200);
     const directCaptureBody = JSON.parse(directCaptureRes.body);
@@ -672,9 +696,17 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
     // Simulate database record having an order that fails pre-flight validation (wrong payee)
     db.prepare("UPDATE executed_intents SET order_id = 'ORDER-FOREIGN-WRONG-PAYEE' WHERE intent_id = 'int_http_preflight_fail_01'").run();
 
+    const preflightRow = db
+      .prepare('SELECT payload_hash FROM executed_intents WHERE intent_id = ?')
+      .get('int_http_preflight_fail_01') as { payload_hash: string };
+
     const approveRes = await server.inject({
       method: 'POST',
       url: '/v1/intents/int_http_preflight_fail_01/approve',
+      headers: ownerAuthHeaders,
+      payload: {
+        expected_payload_hash: preflightRow.payload_hash,
+      },
     });
 
     expect(approveRes.statusCode).toBe(400);
@@ -844,5 +876,217 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
       .prepare("SELECT * FROM audit_events WHERE ref = 'WH-SPOOFED-ATTACK-01'")
       .all();
     expect(rogueEvents).toHaveLength(0);
+  });
+
+  // --------------------------------------------------------------------------
+  // Agent Token Rejection on Human Approval & Capture Endpoints (FR-18, FR-31, INV-4)
+  // --------------------------------------------------------------------------
+  it('Authentication: POST /v1/intents/:id/approve and /capture reject agent Bearer tokens with HTTP 403', async () => {
+    // 1. Propose lamp ($45.00 -> STEP_UP)
+    const proposal: PurchaseIntentProposal = {
+      intent_id: 'int_http_auth_reject_01',
+      mandate_id: mandateId,
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-DESK-LAMP', qty: 1, claimed_unit_price_minor: 4500 }],
+      claimed_total_minor: 4500,
+      currency: 'USD',
+      user_goal_ref: 'msg_auth_reject_test',
+      rationale: 'Auth rejection boundary test',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_auth_reject_test', trust: 'user' }] },
+    };
+
+    const proposeRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/propose',
+      payload: proposal,
+    });
+    expect(proposeRes.statusCode).toBe(200);
+
+    // 2. Agent attempts to call POST /v1/intents/:id/approve with AGENT_TOKEN -> 403 Forbidden
+    const agentApproveRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_auth_reject_01/approve',
+      headers: {
+        authorization: `Bearer ${TEST_AGENT_TOKEN}`,
+      },
+    });
+    expect(agentApproveRes.statusCode).toBe(403);
+    const approveErr = JSON.parse(agentApproveRes.body);
+    expect(approveErr.error).toBe('FORBIDDEN');
+    expect(approveErr.message).toContain('Agent tokens are forbidden');
+
+    // 3. Agent attempts to call POST /v1/intents/:id/capture with AGENT_TOKEN -> 403 Forbidden
+    const agentCaptureRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_auth_reject_01/capture',
+      headers: {
+        authorization: `Bearer ${TEST_AGENT_TOKEN}`,
+      },
+    });
+    expect(agentCaptureRes.statusCode).toBe(403);
+    const captureErr = JSON.parse(agentCaptureRes.body);
+    expect(captureErr.error).toBe('FORBIDDEN');
+    expect(captureErr.message).toContain('Agent tokens are forbidden');
+
+    // 4. Agent attempts to call POST /v1/intents/:id/reject with AGENT_TOKEN -> 403 Forbidden
+    const agentRejectRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_auth_reject_01/reject',
+      headers: {
+        authorization: `Bearer ${TEST_AGENT_TOKEN}`,
+      },
+    });
+    expect(agentRejectRes.statusCode).toBe(403);
+    const rejectErr = JSON.parse(agentRejectRes.body);
+    expect(rejectErr.error).toBe('FORBIDDEN');
+    expect(rejectErr.message).toContain('Agent tokens are forbidden');
+  });
+
+  // --------------------------------------------------------------------------
+  // Item 2: Strict Human Route Allowlist & Zero Side-Effect Negative Tests (FR-18, FR-31, INV-4)
+  // --------------------------------------------------------------------------
+  it('Item 2: approve, capture, and reject reject missing header, random token, and non-Bearer with 401 (zero DB mutation, zero PayPal calls)', async () => {
+    // 1. Setup a STEP_UP intent in database awaiting human approval
+    const testIntentId = 'int_http_auth_strict_guard_01';
+    mandateService.reserve({
+      mandateId,
+      intentId: testIntentId,
+      amountMinor: 4500,
+    });
+    db.prepare(`
+      INSERT INTO executed_intents (intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, payload_hash, refusal_reason, created_at, updated_at)
+      VALUES (?, ?, 'mrc_demo_store', 'STEP_UP', '{}', 'AWAITING_PAYER_APPROVAL', 'ORDER-HTTP-OK', 'hash_guard_test', NULL, ?, ?)
+    `).run(testIntentId, mandateId, FIXED_NOW, FIXED_NOW);
+
+    const endpoints = [
+      { method: 'POST' as const, url: `/v1/intents/${testIntentId}/approve` },
+      { method: 'POST' as const, url: `/v1/intents/${testIntentId}/capture` },
+      { method: 'POST' as const, url: `/v1/intents/${testIntentId}/reject` },
+    ];
+
+    const invalidAuthCases = [
+      { desc: 'missing authorization header', headers: {} },
+      { desc: 'random unknown token', headers: { authorization: 'Bearer random_unauthorized_token_attacker_999' } },
+      { desc: 'non-Bearer Basic scheme', headers: { authorization: 'Basic dXNlcjpwYXNz' } },
+      { desc: 'non-Bearer raw token without prefix', headers: { authorization: TEST_OWNER_TOKEN } },
+      { desc: 'non-Bearer Token prefix', headers: { authorization: `Token ${TEST_OWNER_TOKEN}` } },
+      { desc: 'empty Bearer token', headers: { authorization: 'Bearer ' } },
+    ];
+
+    for (const ep of endpoints) {
+      for (const authCase of invalidAuthCases) {
+        orderCallCount = 0;
+        captureCallCount = 0;
+
+        const res = await server.inject({
+          method: ep.method,
+          url: ep.url,
+          headers: authCase.headers,
+          payload: { expected_payload_hash: 'hash_guard_test' },
+        });
+
+        // Must reject with 401 Unauthorized
+        expect(res.statusCode, `${ep.url} with ${authCase.desc}`).toBe(401);
+        const errBody = JSON.parse(res.body);
+        expect(errBody.error).toBe('UNAUTHORIZED');
+
+        // Verify zero DB mutations: intent is STILL in AWAITING_PAYER_APPROVAL
+        const intentRow = db.prepare('SELECT status, refusal_reason FROM executed_intents WHERE intent_id = ?').get(testIntentId) as { status: string; refusal_reason: string | null };
+        expect(intentRow.status).toBe('AWAITING_PAYER_APPROVAL');
+        expect(intentRow.refusal_reason).toBeNull();
+
+        // Verify zero reservation mutations: reservation is STILL strictly HELD
+        const resRow = mandateService.getReservation(testIntentId);
+        expect(resRow).toBeDefined();
+        expect(resRow!.state).toBe('HELD');
+        expect(resRow!.amount_minor).toBe(4500);
+
+        // Verify zero PayPal external calls
+        expect(orderCallCount).toBe(0);
+        expect(captureCallCount).toBe(0);
+      }
+
+      // Also verify agent token receives 403 Forbidden
+      orderCallCount = 0;
+      captureCallCount = 0;
+      const agentRes = await server.inject({
+        method: ep.method,
+        url: ep.url,
+        headers: { authorization: `Bearer ${TEST_AGENT_TOKEN}` },
+        payload: { expected_payload_hash: 'hash_guard_test' },
+      });
+
+      expect(agentRes.statusCode, `${ep.url} with agent token`).toBe(403);
+      expect(JSON.parse(agentRes.body).error).toBe('FORBIDDEN');
+      expect(orderCallCount).toBe(0);
+      expect(captureCallCount).toBe(0);
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Item 4: STEP_UP Approve Requires Payload Hash & /capture Route Guard
+  // --------------------------------------------------------------------------
+  it('Item 4: STEP_UP approve without expected_payload_hash returns 422 with zero orders created, and /capture rejects premature intents with 400', async () => {
+    orderCallCount = 0;
+    captureCallCount = 0;
+
+    // 1. Propose lamp ($45.00 -> STEP_UP)
+    const proposal: PurchaseIntentProposal = {
+      intent_id: 'int_http_item4_test_01',
+      mandate_id: mandateId,
+      merchant_ref: 'mrc_demo_store',
+      items: [{ sku: 'SKU-DESK-LAMP', qty: 1, claimed_unit_price_minor: 4500 }],
+      claimed_total_minor: 4500,
+      currency: 'USD',
+      user_goal_ref: 'msg_item4_test',
+      rationale: 'Item 4 validation test',
+      provenance: { sources: [{ kind: 'user', ref: 'msg_item4_test', trust: 'user' }] },
+    };
+
+    const propRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/propose',
+      payload: proposal,
+    });
+    expect(propRes.statusCode).toBe(200);
+
+    // 2. Attempt approve with empty body -> 422 PAYLOAD_HASH_REQUIRED
+    const emptyApproveRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_item4_test_01/approve',
+      headers: ownerAuthHeaders,
+      payload: {},
+    });
+    expect(emptyApproveRes.statusCode).toBe(422);
+    const emptyErr = JSON.parse(emptyApproveRes.body);
+    expect(emptyErr.error).toBe('PAYLOAD_HASH_REQUIRED');
+    expect(orderCallCount).toBe(0); // Zero PayPal orders created!
+    expect(captureCallCount).toBe(0);
+
+    // 3. Attempt approve with empty string hash -> 422 PAYLOAD_HASH_REQUIRED
+    const blankApproveRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_item4_test_01/approve',
+      headers: ownerAuthHeaders,
+      payload: { expected_payload_hash: '   ' },
+    });
+    expect(blankApproveRes.statusCode).toBe(422);
+    const blankErr = JSON.parse(blankApproveRes.body);
+    expect(blankErr.error).toBe('PAYLOAD_HASH_REQUIRED');
+    expect(orderCallCount).toBe(0);
+
+    // 4. Calling /v1/intents/:id/capture on an intent in PENDING_APPROVAL returns 400 INVALID_STATUS
+    const prematureCaptureRes = await server.inject({
+      method: 'POST',
+      url: '/v1/intents/int_http_item4_test_01/capture',
+      headers: ownerAuthHeaders,
+      payload: {},
+    });
+    expect(prematureCaptureRes.statusCode).toBe(400);
+    const captureErr = JSON.parse(prematureCaptureRes.body);
+    expect(captureErr.error).toBe('INVALID_STATUS');
+    expect(captureErr.message).toContain('expected \'AWAITING_PAYER_APPROVAL\' or \'CAPTURING\'');
+    expect(orderCallCount).toBe(0);
+    expect(captureCallCount).toBe(0);
   });
 });

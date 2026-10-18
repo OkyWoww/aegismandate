@@ -4,10 +4,10 @@
 
 | Concern | Choice | Why / alternative |
 |---------|--------|-------------------|
-| Language | TypeScript (Node 20 LTS), strict mode | One language across API, agent, UI, policy |
+| Language | TypeScript (Node 22 LTS, minimum >=22.0.0), strict mode | One language across API, agent, UI, policy |
 | Monorepo | pnpm workspaces | Simple, fast |
 | API | Fastify + Zod (`zod-to-json-schema`) | Strict validation at the boundary |
-| DB | SQLite via `better-sqlite3` + Drizzle | Zero-setup for judges; single-file; deterministic |
+| DB | SQLite via Node built-in `node:sqlite` (`DatabaseSync`); prepared statements | Zero-setup for judges; zero native C++ compile dependencies on Node 22/24 LTS; single-file; deterministic |
 | Frontend | React + Vite + AG Grid Community (MIT) | AG Grid is genuinely useful here (dense audit/intent grids) |
 | LLM (agent + dispute draft) | Anthropic SDK via a thin `LlmClient` interface; model id from env `LLM_MODEL` | Swappable; judges may supply their own key |
 | Tests | Vitest (unit/property via `fast-check`), Playwright (1–2 e2e smoke) | Property tests for policy invariants |
@@ -16,22 +16,24 @@
 | Deploy (S2) | Render (web service + static site) | Hosted demo URL + sponsor-prize eligibility |
 | License | MIT (`LICENSE` at repo root, visible in GitHub About) | Required by hackathon rules |
 
-### 1.1 SQLite initialization (mandatory, in `packages/db`)
+### 1.1 SQLite initialization (mandatory, in `packages/audit/src/db.ts`)
 
 ```ts
-import Database from 'better-sqlite3';
+// packages/audit/src/db.ts
+// Native driver: Node built-in DatabaseSync (node:sqlite) on Node 22/24 LTS
+import { DatabaseSync } from 'node:sqlite';
 
-export function openDb(path: string) {
-  const db = new Database(path);
-  db.pragma('journal_mode = WAL');
-  db.pragma('busy_timeout = 5000');   // competing BEGIN IMMEDIATE waits instead of throwing SQLITE_BUSY
-  db.pragma('synchronous = NORMAL');  // safe with WAL, faster commits
-  db.pragma('foreign_keys = ON');
+export function openDb(path: string): DatabaseConnection {
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');   // competing BEGIN IMMEDIATE waits instead of throwing SQLITE_BUSY
+  db.exec('PRAGMA synchronous = NORMAL;');  // safe with WAL, faster commits
+  db.exec('PRAGMA foreign_keys = ON;');
   return db;
 }
 ```
 
-Notes: (1) `better-sqlite3` is synchronous, so inside one Node process writes are already serialized; `busy_timeout` matters when a **second connection or process** touches the file (seed script, test workers, a stray sim runner). (2) The wait is blocking, so keep it at 5 s and keep write transactions short (no network calls inside a transaction — PayPal calls happen **outside**, between the reservation transaction and the result transaction). (3) A retry-on-`SQLITE_BUSY` wrapper remains as a backstop. (4) `pnpm test:concurrency` must run with multiple connections to the same file to exercise this path (AC-8, AC-11).
+Notes: (1) Node's `DatabaseSync` (`node:sqlite`) is synchronous, so inside one Node process writes are serialized; `busy_timeout` matters when a **second connection or process** touches the file (multi-process workers, seed script, test workers). (2) The wait is blocking, so keep it at 5 s and keep write transactions short (no network calls inside a transaction — PayPal calls happen **outside**, between the reservation transaction and the result transaction). (3) Direct prepared statements are used for minimal overhead and explicit control over `BEGIN IMMEDIATE` transactions. (4) `pnpm test:concurrency` runs with multiple processes/connections to the same file to exercise this path (AC-8, AC-11).
 
 ## 2. Repository layout
 

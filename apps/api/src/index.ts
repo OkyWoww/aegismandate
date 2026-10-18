@@ -97,6 +97,8 @@ export async function startServer(options: StartServerOptions = {}) {
     catalogResolver,
     payPalClient,
     hmacKey,
+    ownerToken: process.env['OWNER_TOKEN'],
+    agentToken: process.env['AGENT_TOKEN'],
     webhookId: process.env['PAYPAL_WEBHOOK_ID'],
     logger: options.logger ?? false,
   });

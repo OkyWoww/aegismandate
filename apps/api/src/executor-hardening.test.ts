@@ -2043,6 +2043,144 @@ describe('Executor Hardening (Task T-008, AC-3, AC-9, AC-10, FR-14, FR-28, FR-29
       // Assert that SQLite row status was strictly CAPTURING while inside getOrder
       expect(statusObservedDuringGetOrder).toBe('CAPTURING');
     });
+
+    it('Temuan 5: Local DB failure on Step D after PayPal capture succeeds leaves intent in CAPTURING and reservation in HELD, and startup reconciliation recovers and settles it cleanly', async () => {
+      const intentId = 'int_step_d_fail_01';
+      const orderId = 'ORDER-STEP-D-MOCK';
+      const captureId = 'CAPTURE-STEP-D-AUTH';
+      let payPalOrderCompleted = false;
+
+      const mockPayPalClient = new PayPalClient({
+        clientId: 'mock_client_id',
+        clientSecret: 'mock_client_secret',
+        environment: 'sandbox',
+        fetchFn: async (url, init) => {
+          const urlStr = String(url);
+          if (urlStr.includes('/v1/oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'mock_token', expires_in: 3600 }), { status: 200 });
+          }
+          if (urlStr.includes('/capture') && init?.method === 'POST') {
+            payPalOrderCompleted = true;
+            return new Response(
+              JSON.stringify({
+                id: captureId,
+                status: 'COMPLETED',
+                purchase_units: [
+                  {
+                    reference_id: intentId,
+                    payments: {
+                      captures: [{ id: captureId, status: 'COMPLETED' }],
+                    },
+                  },
+                ],
+              }),
+              { status: 201 },
+            );
+          }
+          if (urlStr.includes(`/v2/checkout/orders/${orderId}`) && (!init || init.method === 'GET')) {
+            return new Response(
+              JSON.stringify({
+                id: orderId,
+                status: payPalOrderCompleted ? 'COMPLETED' : 'APPROVED',
+                purchase_units: [
+                  {
+                    reference_id: intentId,
+                    amount: { currency_code: 'USD', value: '9.00' },
+                    payee: { email_address: 'merchant@demo-store.local' },
+                    payments: payPalOrderCompleted
+                      ? {
+                          captures: [{ id: captureId, status: 'COMPLETED' }],
+                        }
+                      : undefined,
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      });
+
+      // 1. Setup intent in AWAITING_PAYER_APPROVAL with reservation HELD
+      mandateService.reserve({
+        mandateId: 'mnd_hardened_01',
+        intentId,
+        amountMinor: 900,
+      });
+      db.prepare(`
+        INSERT INTO executed_intents (
+          intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, 'ALLOW', '{}', 'AWAITING_PAYER_APPROVAL', ?, NULL, 'hash_step_d', NULL, ?, ?)
+      `).run(intentId, 'mnd_hardened_01', 'mrc_demo_store', orderId, '2026-10-20T08:00:00Z', '2026-10-20T08:00:00Z');
+
+      // 2. Intercept DB to trigger simulated error during Step D settlement update
+      const originalPrepare = db.prepare.bind(db);
+      let throwOnStepD = true;
+      db.prepare = ((sql: string) => {
+        if (throwOnStepD && sql.includes('UPDATE executed_intents') && sql.includes('SET status = \'CAPTURED\'')) {
+          throw new Error('Simulated SQLite Disk I/O or lock error in Step D');
+        }
+        return originalPrepare(sql);
+      }) as typeof db.prepare;
+
+      // 3. Execute captureApprovedOrder
+      const result = await captureApprovedOrder({
+        intentId,
+        payPalClient: mockPayPalClient,
+        mandateService,
+        catalogResolver,
+        db,
+        now: '2026-10-20T08:05:00Z',
+      });
+
+      // Assert captureApprovedOrder gracefully aborted Step D without corrupting reservation
+      expect(result.status).toBe('CAPTURING');
+      expect(result.refusalReason).toContain('STEP_D_DB_FAILURE: Simulated SQLite Disk I/O or lock error in Step D');
+
+      // Crucial Safety Guarantees (INV-8, INV-9, Temuan 5):
+      // - Reservation MUST NOT be released! It must remain strictly HELD.
+      const reservationAfterFail = mandateService.getReservation(intentId);
+      expect(reservationAfterFail).toBeDefined();
+      expect(reservationAfterFail!.state).toBe('HELD');
+      expect(reservationAfterFail!.amount_minor).toBe(900);
+
+      // - Intent status in SQLite MUST remain strictly CAPTURING (not marked FAILED!)
+      const intentAfterFail = db.prepare('SELECT status, refusal_reason FROM executed_intents WHERE intent_id = ?').get(intentId) as { status: string; refusal_reason: string | null };
+      expect(intentAfterFail.status).toBe('CAPTURING');
+
+      // 4. Recovery: SQLite connection/disk restored, startup reconciliation runs
+      throwOnStepD = false;
+      db.prepare = originalPrepare;
+
+      const reconciledIntents = await reconcileCapturingIntents({
+        db,
+        payPalClient: mockPayPalClient,
+        mandateService,
+        catalogResolver,
+        now: '2026-10-20T08:06:00Z',
+      });
+
+      expect(reconciledIntents).toContain(intentId);
+
+      // Verify post-reconciliation state: cleanly settled to CAPTURED
+      const intentSettled = db.prepare('SELECT status, order_id, capture_id FROM executed_intents WHERE intent_id = ?').get(intentId) as { status: string; order_id: string; capture_id: string };
+      expect(intentSettled.status).toBe('CAPTURED');
+      expect(intentSettled.order_id).toBe(orderId);
+      expect(intentSettled.capture_id).toBe(captureId);
+
+      // Reservation is now CAPTURED
+      const reservationSettled = mandateService.getReservation(intentId);
+      expect(reservationSettled!.state).toBe('CAPTURED');
+
+      // Audit event ORDER_CAPTURED was appended with authentic capture_id
+      const auditCaptured = db.prepare("SELECT * FROM audit_events WHERE ref = ? AND type = 'ORDER_CAPTURED'").get(intentId) as { payload: string } | undefined;
+      expect(auditCaptured).toBeDefined();
+      const payload = JSON.parse(auditCaptured!.payload);
+      expect(payload.capture_id).toBe(captureId);
+      expect(payload.amount_minor).toBe(900);
+      expect(payload.status).toBe('COMPLETED');
+    });
   });
 });
 

@@ -1,0 +1,4 @@
+
+> aegismandate@0.9.0-rc3 lint D:\mandatepay
+> eslint . --ext .ts,.tsx,.js,.cjs
+

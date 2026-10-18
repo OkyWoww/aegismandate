@@ -30,6 +30,7 @@ const SMOKE_PORT = Number(process.env.SMOKE_PORT || 3099);
 const SMOKE_HOST = '127.0.0.1';
 const SMOKE_DB_PATH = path.resolve(process.cwd(), './data/smoke-test.db');
 const HMAC_KEY = 'mandatepay_demo_hmac_secret_key_default_32chars_for_local_testing';
+const OWNER_TOKEN = process.env['OWNER_TOKEN'] || 'mandate_owner_secret_token_default';
 const BASE_URL = `http://${SMOKE_HOST}:${SMOKE_PORT}`;
 
 function cleanupTempDb() {
@@ -276,11 +277,22 @@ async function runSmokeSuite(): Promise<boolean> {
         throw new Error(`Propose did not yield STEP_UP: HTTP ${propRes.status} ${JSON.stringify(propBody)}`);
       }
 
-      // 4b: Approve by owner
+      // Fetch intent to get payload_hash for cryptographic approval binding (FR-28)
+      const getRes = await fetch(`${BASE_URL}/v1/intents/${propBody.intent_id}`);
+      const getBody = (await getRes.json()) as { payload_hash?: string };
+      const payloadHash = getBody.payload_hash;
+      if (!payloadHash) {
+        throw new Error(`Intent ${propBody.intent_id} missing payload_hash`);
+      }
+
+      // 4b: Approve by owner carrying OWNER_TOKEN and expected_payload_hash (FR-18, FR-28)
       const appRes = await fetch(`${BASE_URL}/v1/intents/${propBody.intent_id}/approve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OWNER_TOKEN}`,
+        },
+        body: JSON.stringify({ expected_payload_hash: payloadHash }),
       });
       const appBody = (await appRes.json()) as {
         status: string;

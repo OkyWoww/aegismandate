@@ -1,0 +1,30 @@
+
+> aegismandate@0.9.0-rc3 test:concurrency D:\mandatepay
+> tsx scripts/concurrency-bench.ts
+
+================================================================================
+ SQLITE MULTI-PROCESS WAL CONCURRENCY BENCHMARK (BEGIN IMMEDIATE)
+ Target Database : D:\mandatepay\data\concurrency-bench.db
+ Concurrency     : 4 OS processes × 50 transactions = 200 total events
+================================================================================
+
+Launching 4 concurrent child processes...
+
+All worker processes completed successfully:
+  -> Worker 0: 50 transactions in 727ms (68.8 tx/s)
+  -> Worker 1: 50 transactions in 801ms (62.4 tx/s)
+  -> Worker 2: 50 transactions in 951ms (52.6 tx/s)
+  -> Worker 3: 50 transactions in 960ms (52.1 tx/s)
+
+Verifying database consistency and cryptographic integrity...
+
+================================================================================
+ BENCHMARK RESULTS SUMMARY (100% PASS)
+================================================================================
+Total Events Committed      : 200 / 200
+Total Elapsed Time          : 982ms
+Effective Contention Rate   : 203.7 transactions/sec
+Unhandled SQLITE_BUSY Errors: 0 (Zero lock contention drops)
+Sequence Continuity Check   : 100% Contiguous (1..200, zero gaps, zero forks)
+SHA-256 Hash Chain Integrity: VALID (Unbroken cryptographic chain)
+================================================================================

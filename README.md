@@ -82,7 +82,7 @@ flowchart TD
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
 │  │ Policy Engine    │  │ Tamper Ledger    │  │ PayPal Client        │  │
 │  │ (Deterministic,  │  │ (Hash-Chained    │  │ (Sandbox Orders v2,  │  │
-│  │  Zero I/O)       │  │  better-sqlite3) │  │  Secret Isolation)   │  │
+│  │  Zero I/O)       │  │  node:sqlite)    │  │  Secret Isolation)   │  │
 │  └────────▲─────────┘  └────────▲─────────┘  └──────────▲───────────┘  │
 └───────────┼─────────────────────┼───────────────────────┼──────────────┘
             │ 3. Submit Intent    │ Record Audit          │ 4. Capture
@@ -281,7 +281,7 @@ aegismandate/
 ├─ packages/
 │  ├─ schemas/                       # Shared Zod schemas (Mandate, Intent, Decision, Audit)
 │  ├─ policy/                        # Pure deterministic policy engine (no I/O)
-│  ├─ audit/                         # Hash-chained tamper-evident ledger (better-sqlite3)
+│  ├─ audit/                         # Hash-chained tamper-evident ledger (node:sqlite)
 │  ├─ scanner/                       # Advisory indirect injection heuristics & safety scanners
 │  ├─ paypal/                        # PayPal Sandbox typed client (Orders v2 API)
 │  └─ sim/                           # Attack suite harness (A-01 to A-12 test vectors)
@@ -306,7 +306,7 @@ aegismandate/
 | **T-001** | **Repo Bootstrap** | 🟢 COMPLETED | Monorepo layout, strict TS, ESLint boundaries (`agent` ↛ `paypal`), CI | `tech §2` |
 | **T-002** | **PayPal Sandbox Spike** | 🟢 COMPLETED | Orders v2 typed client, mock Webhook verify (live webhook unproven), Vault spike, Plan B locked | `tech §4` |
 | **T-003** | **Shared Schemas (Zod)** | 🟢 COMPLETED | Strict Zod schemas for Mandate, Proposal, Decision, Audit | `spec §3` |
-| **T-004** | **Audit Ledger Package** | 🟢 COMPLETED | Hash-chained ledger (`better-sqlite3`, WAL mode, BEGIN IMMEDIATE, 200 concurrency) | `spec §2` |
+| **T-004** | **Audit Ledger Package** | 🟢 COMPLETED | Hash-chained ledger (`node:sqlite`, WAL mode, BEGIN IMMEDIATE, 200 concurrency) | `spec §2` |
 | **T-005** | **Mandate Service** | 🟢 COMPLETED | Lifecycle management (create, activate, revoke, suspend), HMAC-SHA256 | `spec §2` |
 | **T-006** | **Demo Store & Catalog** | 🟢 COMPLETED | Deterministic merchants, categories, and relative-clock seed script | `demo §1` |
 | **T-007** | **Golden Path End-to-End**| 🟢 COMPLETED | Scripted intent → policy → reservation → PayPal capture (verified live sandbox) | `spec §2` |
@@ -322,7 +322,7 @@ aegismandate/
 | **T-017** | **Documentation Kit**   | 🟢 COMPLETED | Executive README, API reference ([`docs/api.md`](docs/api.md)), demo script ([`docs/demo-script.md`](docs/demo-script.md)) | `demo §2` |
 | **T-018** | **CI/CD & Quality Gates**| 🟢 COMPLETED | GitHub Actions 7-stage CI pipeline, frozen lockfile check, production build validation | `tech §2` |
 | **T-019** | **Submission & Release**| 🟢 COMPLETED | Codebase hygiene audit, live sandbox proof, tagged candidate release `v0.9.0-rc1` | `tasks T-019` |
-| **T-029** | **Live E2E Capture Runner**| 🟢 COMPLETED | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`) | `tech §4.3` |
+| **T-029** | **Live E2E Capture Runner**| Verified live (2 runs); 20-run gate pending (T-025) | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`) | `tech §4.3` |
 
 ---
 

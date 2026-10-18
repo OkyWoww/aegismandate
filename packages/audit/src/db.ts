@@ -1,8 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
+import { DatabaseSync } from 'node:sqlite';
 
 export interface DatabasePreparedStatement {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
@@ -21,6 +19,7 @@ export interface DatabaseConnection {
 
 /**
  * Creates and initializes a SQLite connection conforming strictly to tech.md §1.1:
+ * Built on Node 22+ built-in node:sqlite (DatabaseSync)
  * - WAL mode (journal_mode = WAL)
  * - busy_timeout = 5000 (competing BEGIN IMMEDIATE waits instead of throwing SQLITE_BUSY)
  * - synchronous = NORMAL (safe with WAL, faster commits)
@@ -35,67 +34,41 @@ export function openDb(dbPath: string): DatabaseConnection {
     }
   }
 
-  let dbInstance: DatabaseConnection;
+  const rawDb = new DatabaseSync(dbPath);
+  let opened = true;
+  let inTx = false;
 
-  // Attempt better-sqlite3 first if available
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const BetterSqlite3 = require('better-sqlite3');
-    const rawDb = new BetterSqlite3(dbPath);
-    let opened = true;
-
-    dbInstance = {
-      exec: (sql: string) => rawDb.exec(sql),
-      pragma: (pragmaStr: string) => rawDb.pragma(pragmaStr),
-      prepare: (sql: string) => {
-        const stmt = rawDb.prepare(sql);
-        return {
-          run: (...params: unknown[]) => stmt.run(...params),
-          get: (...params: unknown[]) => stmt.get(...params) as Record<string, unknown> | undefined,
-          all: (...params: unknown[]) => stmt.all(...params) as Array<Record<string, unknown>>,
-        };
-      },
-      close: () => {
-        opened = false;
-        rawDb.close();
-      },
-      isOpen: () => opened && rawDb.open,
-      isInTransaction: () => Boolean(rawDb.inTransaction),
-    };
-  } catch {
-    // Fall back to Node built-in node:sqlite (Node 22 LTS / 24 LTS)
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { DatabaseSync } = require('node:sqlite');
-    const rawDb = new DatabaseSync(dbPath);
-    let opened = true;
-    let inTx = false;
-
-    dbInstance = {
-      exec: (sql: string) => {
-        const trimmed = sql.trim().toUpperCase();
-        if (trimmed.startsWith('BEGIN')) inTx = true;
-        if (trimmed.startsWith('COMMIT') || trimmed.startsWith('ROLLBACK')) inTx = false;
-        return rawDb.exec(sql);
-      },
-      pragma: (pragmaStr: string) => {
-        return rawDb.exec(`PRAGMA ${pragmaStr};`);
-      },
-      prepare: (sql: string) => {
-        const stmt = rawDb.prepare(sql);
-        return {
-          run: (...params: unknown[]) => stmt.run(...params),
-          get: (...params: unknown[]) => stmt.get(...params) as Record<string, unknown> | undefined,
-          all: (...params: unknown[]) => stmt.all(...params) as Array<Record<string, unknown>>,
-        };
-      },
-      close: () => {
-        opened = false;
-        rawDb.close();
-      },
-      isOpen: () => opened,
-      isInTransaction: () => inTx,
-    };
-  }
+  const dbInstance: DatabaseConnection = {
+    exec: (sql: string) => {
+      const trimmed = sql.trim().toUpperCase();
+      if (trimmed.startsWith('BEGIN')) inTx = true;
+      if (trimmed.startsWith('COMMIT') || trimmed.startsWith('ROLLBACK')) inTx = false;
+      return rawDb.exec(sql);
+    },
+    pragma: (pragmaStr: string) => {
+      return rawDb.exec(`PRAGMA ${pragmaStr};`);
+    },
+    prepare: (sql: string) => {
+      const stmt = rawDb.prepare(sql);
+      return {
+        run: (...params: unknown[]) => {
+          const res = (stmt.run as (...args: unknown[]) => { changes: number | bigint; lastInsertRowid: number | bigint })(...params);
+          return {
+            changes: Number(res.changes),
+            lastInsertRowid: res.lastInsertRowid,
+          };
+        },
+        get: (...params: unknown[]) => (stmt.get as (...args: unknown[]) => Record<string, unknown> | undefined)(...params),
+        all: (...params: unknown[]) => (stmt.all as (...args: unknown[]) => Array<Record<string, unknown>>)(...params),
+      };
+    },
+    close: () => {
+      opened = false;
+      rawDb.close();
+    },
+    isOpen: () => opened,
+    isInTransaction: () => inTx,
+  };
 
   // Set mandatory SQLite pragmas per tech.md §1.1
   dbInstance.pragma('journal_mode = WAL');

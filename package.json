@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.9.0-rc3",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "tsx scripts/dev.ts",
     "start:all": "tsx scripts/dev.ts",

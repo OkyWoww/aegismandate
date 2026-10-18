@@ -1218,6 +1218,8 @@ export async function captureApprovedOrder(
   const merchantRef = preCheck.merchantRef;
   const mandate = mandateService.getMandate(mandateId);
 
+  let captureExecutedOnPayPal = false;
+
   try {
     // STEP B: Outside transaction — Pre-capture preflight against PayPal (FR-35, AC-13)
     let fetchedOrder: PayPalOrderResponse;
@@ -1265,6 +1267,7 @@ export async function captureApprovedOrder(
     // Strict Fail-Closed Preflight Assertions (FR-35, INV-6, INV-7)
     // In captureApprovedOrder, reference_id, amount.value, amount.currency_code, and payee MUST all be present and strictly match expected server values.
     // If ANY field is missing or undefined -> immediately fail with PREFLIGHT_VALIDATION_FAILED, release reservation, write audit event, and make ZERO captureOrder calls.
+    let validatedPayeeRef: string | undefined;
     try {
       if (fetchedOrder.status !== 'APPROVED' && fetchedOrder.status !== 'COMPLETED') {
         throw new Error(`Order preflight failed: status '${fetchedOrder.status}' is not APPROVED or COMPLETED`);
@@ -1310,6 +1313,7 @@ export async function captureApprovedOrder(
         throw new Error(`Order preflight failed: merchant '${merchantRef}' not found in server payee registry`);
       }
       const expectedPayeeRef = expectedPayee.payeeRef;
+      validatedPayeeRef = expectedPayeeRef;
 
       // payee MUST be present and strictly match expected server payee
       if (!purchaseUnit.payee || !purchaseUnit.payee.email_address) {
@@ -1349,6 +1353,10 @@ export async function captureApprovedOrder(
       };
     }
 
+    if (!validatedPayeeRef) {
+      throw new Error(`Order preflight failed: missing validated payee_ref for merchant '${merchantRef}'`);
+    }
+
     // STEP C: Capture Execution with Deterministic Request-Id (FR-14, FR-37, AC-14)
     const captureRequestId = generatePayPalRequestId(intentId, 'capture_order');
     let captureId: string;
@@ -1379,6 +1387,7 @@ export async function captureApprovedOrder(
         };
       }
       captureId = authenticCaptureId;
+      captureExecutedOnPayPal = true;
     } else {
       try {
         const captureResponse = await withExponentialBackoff(
@@ -1390,6 +1399,7 @@ export async function captureApprovedOrder(
           throw new Error('Capture response missing authentic captures[0].id');
         }
         captureId = authenticCaptureId;
+        captureExecutedOnPayPal = true;
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         if (/ORDER_ALREADY_CAPTURED/i.test(errMsg)) {
@@ -1420,6 +1430,7 @@ export async function captureApprovedOrder(
               throw new Error('Reconciliation error: missing authentic captures[0].id in reconciled order');
             }
             captureId = authenticId;
+            captureExecutedOnPayPal = true;
           } catch (recErr: unknown) {
             const recMsg = recErr instanceof Error ? recErr.message : String(recErr);
             withImmediateTransaction(db, () => {
@@ -1484,6 +1495,7 @@ export async function captureApprovedOrder(
             capture_id: captureId,
             amount_minor: verifiedTotalMinor,
             currency: mandate?.currency ?? 'USD',
+            payee_ref: validatedPayeeRef,
             status: 'COMPLETED',
             request_id: captureRequestId,
           },
@@ -1505,9 +1517,22 @@ export async function captureApprovedOrder(
       status: 'CAPTURED',
     };
   } catch (unhandledErr: unknown) {
-    // Prevent Stuck CAPTURING States:
-    // If ANY unhandled error escapes, ensure intent does not remain stranded in CAPTURING.
     const unhandledMsg = unhandledErr instanceof Error ? unhandledErr.message : String(unhandledErr);
+
+    // Temuan 5 & FR-37: If PayPal capture already succeeded, money was charged!
+    // Do NOT release reservation or mark FAILED on DB error in Step D.
+    // Keep intent in CAPTURING and reservation in HELD so startup reconciliation settles it cleanly.
+    if (captureExecutedOnPayPal) {
+      return {
+        intentId,
+        orderId: targetOrderId,
+        status: 'CAPTURING',
+        refusalReason: `STEP_D_DB_FAILURE: ${unhandledMsg}`,
+      };
+    }
+
+    // Prevent Stuck CAPTURING States:
+    // If ANY unhandled error escapes prior to PayPal capture execution, ensure intent does not remain stranded in CAPTURING.
     withImmediateTransaction(db, () => {
       const cur = db
         .prepare('SELECT status FROM executed_intents WHERE intent_id = ?')

@@ -10,47 +10,47 @@ Buyer:       [REDACTED_EMAIL]
 --------------------------------------------------------------------------------
 [Control Plane API] Listening at http://127.0.0.1:3098
 [1/4] Proposing purchase intent via Control Plane API...
-      Order created: 6Y707949X16873608
-      Approve URL:   https://www.sandbox.paypal.com/checkoutnow?token=6Y707949X16873608
+      Order created: 6XP40258DG517254E
+      Approve URL:   https://www.sandbox.paypal.com/checkoutnow?token=6XP40258DG517254E
 [2/4] Automating buyer approval via Playwright headless browser...
-      Navigating to PayPal approval URL...
-      Current URL: https://www.sandbox.paypal.com/checkoutnow?token=6Y707949X16873608
+      Current URL: https://www.sandbox.paypal.com/checkoutnow?token=6XP40258DG517254E
       Page title: Log in ke rekening PayPal Anda
       Filling buyer email credentials...
       Filling buyer password...
       Submitted login credentials, awaiting redirect...
-      Post-login URL: https://www.sandbox.paypal.com/webapps/hermes?flow=1-P&ulReturn=true&token=6Y707949X16873608&ssrt=1792331096281&rcache=1&useraction=CONTINUE&cookieBannerVariant=hidden&country.x=ID&locale.x=id_ID
+      [LoadState Note]: Continuing to check approval button selector...
+      Post-login URL: https://www.sandbox.paypal.com/webapps/hermes?flow=1-P&ulReturn=true&token=6XP40258DG517254E&ssrt=1792334520901&rcache=1&useraction=CONTINUE&cookieBannerVariant=hidden&country.x=ID&locale.x=id_ID
       Waiting for approval consent button...
       Clicking approval consent button...
       Clicking secondary confirmation button...
       Buyer approval completed successfully.
 [3/4] Triggering Control Plane capture flow...
-      Authentic PayPal Capture ID: 6GD39031KV4702529
+      Authentic PayPal Capture ID: 01M13213U8179374Y
 [4/4] Verifying ORDER_CAPTURED row in cryptographic audit ledger...
 [5/5] Querying GET /v1/audit/verify for cryptographic chain integrity...
       Audit ledger verification: valid=true, count=9, broken_seq=null
 ================================================================================
  LIVE E2E VERIFICATION COMPLETED (PASS)
- Authentic Capture ID : 6GD39031KV4702529
- Audit Event Ref      : int_e2e_1792331093397
+ Authentic Capture ID : 01M13213U8179374Y
+ Audit Event Ref      : int_e2e_1792334519157
  Audit Ledger Valid   : true (broken_seq=null)
  Audit Event (JSON)   :
 {
   "seq": 9,
-  "ts": "2026-10-18T13:45:23.707Z",
+  "ts": "2026-10-18T14:42:43.122Z",
   "actor": "control_plane",
   "type": "ORDER_CAPTURED",
-  "ref": "int_e2e_1792331093397",
+  "ref": "int_e2e_1792334519157",
   "payload": {
     "amount_minor": 900,
-    "capture_id": "6GD39031KV4702529",
+    "capture_id": "01M13213U8179374Y",
     "currency": "USD",
-    "order_id": "6Y707949X16873608",
+    "order_id": "6XP40258DG517254E",
     "payee_ref": "sb-merchant-demo@business.example.com",
-    "request_id": "req_capture_order_313686dac9935ebdd8920304",
+    "request_id": "req_capture_order_50af3f79b345452cdc190054",
     "status": "COMPLETED"
   },
-  "prev_hash": "b540521d5616762520a23f3c1eda958029f809959c252248ca20132e4838e140",
-  "hash": "71079e25762d54d7005d1b3917621f774978c9b8271d489fffc81c03bcc66d4f"
+  "prev_hash": "c4afadecf4b84837bdf2b00b965b02349150322916c4c24d5720116d6b269f63",
+  "hash": "1ccf13ba37129296d8bd761aaca51ac906e5846082bb429b7e813377088b7808"
 }
 ================================================================================

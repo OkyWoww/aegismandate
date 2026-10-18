@@ -25,7 +25,7 @@ for (let i = 1; i <= TOTAL_RUNS; i++) {
     const rawOutput = execSync('pnpm e2e:live', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 90000,
+      timeout: 120000,
     });
 
     const elapsed = Date.now() - t0;

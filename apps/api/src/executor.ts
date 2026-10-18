@@ -1516,7 +1516,7 @@ export async function captureApprovedOrder(
         mandateService.releaseReservation(intentId, `Unhandled error during capture: ${unhandledMsg}`);
         appendAuditEvent(db, {
           actor: 'control_plane',
-          type: 'ORDER_FAILED',
+          type: 'ORDER_CAPTURE_FAILED',
           ref: intentId,
           payload: { error: unhandledMsg, stage: 'capturing_abort' },
           ts: now,

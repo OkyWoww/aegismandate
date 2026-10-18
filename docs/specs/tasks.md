@@ -96,3 +96,11 @@ Estimates assume focused daily work. If other commitments overlap any phase, **c
 | Smoke test Plan B alignment | Passed (stops cleanly at `AWAITING_PAYER_APPROVAL`, reservation HELD) | Raw `pnpm smoke` run |
 | Live E2E buyer approval & capture script | Implemented (`pnpm e2e:live`) | Reports `NOT RUN` when buyer credentials absent per Guardrail 6 |
 | Docs consolidation (single `docs/specs/` source), README/demo/risk aligned to Plan B | Completed | Synchronized to Plan B |
+
+## RC4 Backlog (Post-RC3 Hardening & Refinements)
+
+| Item | Title | Description & Target Criteria | Spec / Invariant Refs |
+|------|-------|-------------------------------|-----------------------|
+| Temuan 2 | Smoke Test Mode Detection Refinement | Perbaiki mekanisme deteksi mode verifier smoke (`scripts/smoke.ts`) agar memverifikasi instance runtime fetch / probe sandbox PayPal secara riil, bukan semata-mata mengandalkan string `PAYPAL_CLIENT_ID` atau variabel `.env`, guna mencegah ketidaktepatan pelaporan status LIVE SANDBOX vs MOCK. | NFR-4, T-016 |
+| Temuan 5 | Handling Kegagalan STEP D Pasca-Capture | Tangani kegagalan lokal (misal error I/O atau transaksi DB SQLite) pada STEP D setelah pemanggilan `captureOrder` ke PayPal sukses. Intent harus dipertahankan dalam status `CAPTURING` (tidak boleh langsung di-`FAILED` dan reservasi dilepas) agar mekanisme startup reconciliation (`reconcilePendingCaptures`) dapat memverifikasi state transaksi di PayPal dan menyelesaikan rekonsiliasi audit tanpa kehilangan jejak dana. | INV-8, INV-9, FR-37, AC-14 |
+

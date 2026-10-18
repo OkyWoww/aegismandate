@@ -161,8 +161,9 @@ async function runSmokeSuite(): Promise<boolean> {
     // ------------------------------------------------------------------------
     const t3Start = Date.now();
     try {
+      const allowIntentId = `int_smoke_allow_${Date.now()}`;
       const allowPayload = {
-        intent_id: 'int_smoke_pen_001',
+        intent_id: allowIntentId,
         mandate_id: 'mnd_demo_001',
         merchant_ref: 'mrc_demo_store',
         items: [
@@ -205,7 +206,7 @@ async function runSmokeSuite(): Promise<boolean> {
         const db = openDb(SMOKE_DB_PATH);
         const reservation = db
           .prepare('SELECT state, amount_minor FROM reservations WHERE intent_id = ?')
-          .get('int_smoke_pen_001') as { state: string; amount_minor: number } | undefined;
+          .get(allowIntentId) as { state: string; amount_minor: number } | undefined;
         db.close();
 
         if (reservation?.state !== 'HELD') {
@@ -238,8 +239,9 @@ async function runSmokeSuite(): Promise<boolean> {
     // ------------------------------------------------------------------------
     const t4Start = Date.now();
     try {
+      const stepUpIntentId = `int_smoke_stepup_${Date.now()}`;
       const stepUpPayload = {
-        intent_id: 'int_smoke_lamp_002',
+        intent_id: stepUpIntentId,
         mandate_id: 'mnd_demo_001',
         merchant_ref: 'mrc_demo_store',
         items: [
@@ -296,7 +298,7 @@ async function runSmokeSuite(): Promise<boolean> {
         const db = openDb(SMOKE_DB_PATH);
         const reservation = db
           .prepare('SELECT state, amount_minor FROM reservations WHERE intent_id = ?')
-          .get('int_smoke_lamp_002') as { state: string; amount_minor: number } | undefined;
+          .get(stepUpIntentId) as { state: string; amount_minor: number } | undefined;
         db.close();
 
         if (reservation?.state !== 'HELD') {

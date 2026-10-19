@@ -12,9 +12,10 @@ import { MandateOverviewCard } from './components/MandateOverviewCard.js';
 import { StepUpApprovalsQueue, type PendingStepUpProposal } from './components/StepUpApprovalsQueue.js';
 import { AuditLedgerFeed } from './components/AuditLedgerFeed.js';
 import { AttackSimulationConsole } from './components/AttackSimulationConsole.js';
+import { ImpactHero } from './features/impact/ImpactHero.js';
 import { api, type MandateResponse, type AuditEventItem, type ProposeResponse } from './api/client.js';
 
-const DEMO_MANDATE_ID = 'mnd_demo_mandate_01';
+const DEMO_MANDATE_ID = 'mnd_demo_001';
 
 // Initial fallback mandate data matching demo.md §1
 const INITIAL_MANDATE_DATA: MandateResponse = {
@@ -294,6 +295,9 @@ export function App() {
       <main className="max-w-7xl mx-auto px-6 py-8 flex-1 w-full space-y-8">
         {activeTab === 'dashboard' && (
           <div className="space-y-8">
+            {/* 0. Impact Dashboard Hero (T-018) — additive, above existing sections */}
+            <ImpactHero mandateId={DEMO_MANDATE_ID} />
+
             {/* 1. Mandate Overview Card */}
             <MandateOverviewCard mandateData={mandateData} onRefresh={loadBackendData} />
 

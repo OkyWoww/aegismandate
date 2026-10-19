@@ -1,5 +1,5 @@
 /**
- * MandatePay Local Development Orchestrator (Task T-016)
+ * AegisMandate Local Development Orchestrator (Task T-016)
  * Concurrently boots Fastify API (port 3001) and Vite Dashboard (port 3000).
  * Handles graceful process shutdown with zero orphaned background tasks.
  */
@@ -15,7 +15,7 @@ const DB_PATH = process.env.DB_PATH || './data/mandatepay.db';
 
 async function main() {
   console.log('='.repeat(70));
-  console.log(' MANDATEPAY LOCAL DEVELOPMENT ORCHESTRATOR');
+  console.log(' AEGISMANDATE LOCAL DEVELOPMENT ORCHESTRATOR');
   console.log('='.repeat(70));
 
   // 1. Ensure DB directory and seed if needed
@@ -41,7 +41,7 @@ async function main() {
   const children: ChildProcess[] = [];
 
   const cleanup = () => {
-    console.log('\n[Shutdown] Terminating MandatePay services cleanly...');
+    console.log('\n[Shutdown] Terminating AegisMandate services cleanly...');
     for (const child of children) {
       if (child && !child.killed) {
         try {

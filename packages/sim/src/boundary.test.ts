@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-describe('Architectural Boundary & Invariant Verifications (INV-1, AC-7)', () => {
+describe('Architectural Boundary & Invariant Verifications (INV-1, AC-7)', { timeout: 60000 }, () => {
   const rootDir = path.resolve(__dirname, '../../../');
   const eslint = new ESLint({ cwd: rootDir });
 

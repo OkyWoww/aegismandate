@@ -1,5 +1,9 @@
+﻿
+> aegismandate@0.9.0-rc3 e2e:live:stepup D:\mandatepay
+> tsx --env-file=.env scripts/live-e2e.ts --scenario=stepup
+
 ================================================================================
- MANDATEPAY LIVE SANDBOX E2E VERIFICATION (PLAYWRIGHT BUYER APPROVAL)
+ AEGIS_MANDATE LIVE SANDBOX E2E VERIFICATION (PLAYWRIGHT BUYER APPROVAL)
  Target Scenario(s) : STEPUP
  Endpoint           : http://127.0.0.1:3098
  Buyer              : [REDACTED_EMAIL]
@@ -13,33 +17,51 @@
 [2/5] Handling STEP_UP approval flow with cryptographic expected_payload_hash binding...
       Retrieved payload_hash: 8796c5e8acb1b8c06dff9364c5a362f47a8045f5655d84da5c8801b4b8f255f7
       Executing owner approval via POST /v1/intents/:id/approve with OWNER_TOKEN...
-      Human Approval Succeeded! PayPal Order Created: 93N04518FV231081V
-      Approve URL:   https://www.sandbox.paypal.com/checkoutnow?token=93N04518FV231081V
+      Human Approval Succeeded! PayPal Order Created: 484496815P869672F
+      Approve URL:   https://www.sandbox.paypal.com/checkoutnow?token=484496815P869672F
 [3/5] Automating buyer approval via Playwright headless browser...
-      Current URL: https://www.sandbox.paypal.com/checkoutnow?token=93N04518FV231081V
+      Current URL: https://www.sandbox.paypal.com/checkoutnow?token=484496815P869672F
       Page title: Log in ke rekening PayPal Anda
       Filling buyer email credentials...
       Filling buyer password...
       Submitted login credentials, awaiting redirect...
-      [LoadState Note]: Continuing to check approval button selector...
-      Post-login URL: https://www.sandbox.paypal.com/webapps/hermes?flow=1-P&ulReturn=true&token=93N04518FV231081V&ssrt=1792336670765&rcache=1&useraction=CONTINUE&cookieBannerVariant=hidden&country.x=ID&locale.x=id_ID
+      Post-login URL: https://www.sandbox.paypal.com/webapps/hermes?flow=1-P&ulReturn=true&token=484496815P869672F&ssrt=1792384763153&rcache=1&useraction=CONTINUE&cookieBannerVariant=hidden&country.x=ID&locale.x=id_ID
       Waiting for approval consent button...
       Clicking approval consent button...
       Clicking secondary confirmation button...
       Buyer approval completed successfully.
 [4/5] Triggering Control Plane capture flow (Authorized with OWNER_TOKEN)...
-      Authentic PayPal Capture ID: 4UA87267CY0330117
+      Authentic PayPal Capture ID: 7NG18229W6889870T
 [5/5] Verifying ORDER_CAPTURED row and ledger integrity...
       Audit ledger valid: true (count=10)
       payee_ref verified in ledger: sb-merchant-demo@business.example.com
 ================================================================================
  SCENARIO COMPLETED (PASS): STEP_UP Human-in-the-loop Approval ($45.00 Desk Lamp)
- Authentic Capture ID : 4UA87267CY0330117
- Audit Event Ref      : int_e2e_1792336665394_t3l8
+ Authentic Capture ID : 7NG18229W6889870T
+ Audit Event Ref      : int_e2e_1792384756177_q432
  Audit Ledger Valid   : true (broken_seq=null)
+ Audit Event (JSON)   :
+{
+  "seq": 10,
+  "ts": "2026-10-19T04:39:47.991Z",
+  "actor": "control_plane",
+  "type": "ORDER_CAPTURED",
+  "ref": "int_e2e_1792384756177_q432",
+  "payload": {
+    "amount_minor": 4500,
+    "capture_id": "7NG18229W6889870T",
+    "currency": "USD",
+    "order_id": "484496815P869672F",
+    "payee_ref": "sb-merchant-demo@business.example.com",
+    "request_id": "req_capture_order_ab4283a7d445acf6a4dfdc43",
+    "status": "COMPLETED"
+  },
+  "prev_hash": "bcc829c70e2805083916d6e8ea6e293765e626cdc475bbaaeeb6236d36ba7894",
+  "hash": "07dbb439f9c0b44fcc29cdf8f66f054a39c3026a14862e0eafc34eac32e68ba3"
+}
 ================================================================================
 
 ================================================================================
  LIVE E2E VERIFICATION COMPLETED (PASS)
- [SCENARIO-2-STEPUP] Capture ID: 4UA87267CY0330117 | Intent: int_e2e_1792336665394_t3l8
+ [SCENARIO-2-STEPUP] Capture ID: 7NG18229W6889870T | Intent: int_e2e_1792384756177_q432
 ================================================================================

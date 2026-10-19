@@ -29,7 +29,7 @@ export async function runPayPalSpike(): Promise<SpikeReport> {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID || 'WH-SANDBOX-DEMO';
 
   console.log('====================================================');
-  console.log('MandatePay: T-002 PayPal Sandbox Spike Execution');
+  console.log('AegisMandate: T-002 PayPal Sandbox Spike Execution');
   console.log(`Target: https://api-m.sandbox.paypal.com (${environment})`);
   console.log('====================================================\n');
 

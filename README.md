@@ -25,7 +25,7 @@ Autonomous AI agents capable of browsing the web, selecting products, and comple
 3. **Cryptographic & Hash-Chained Audit Ledger**: Every mandate issuance, intent submission, policy decision, and PayPal capture is recorded into a tamper-evident, SHA-256 hash-chained SQLite ledger.
 
 > [!NOTE]
-> **Pre-Release Verification Disclosure**: As specified in [`tech.md §4.3`](docs/specs/tech.md), webhook signature verification against live PayPal endpoints is **NOT VERIFIED** (validated via mock verifier simulation). In-app live capture (`T-029`) is verified live across 20 consecutive runs (100% pass on attempt-2) and 3 distinct scenarios (Single ALLOW, STEP_UP with cryptographic payload-hash binding, and Multi-item ALLOW).
+> **Pre-Release Verification Disclosure**: As specified in [`tech.md §4.3`](docs/specs/tech.md), webhook signature verification against live PayPal endpoints is **NOT VERIFIED** (validated via mock verifier simulation). In-app live capture (`T-029`) is verified live: 22 live sandbox captures in total: 20 ALLOW (attempt-2, after 18/20 in attempt-1), 1 STEP_UP, 1 Multi-Item.
 
 
 ---
@@ -136,7 +136,7 @@ npx tsx scripts/create-sandbox-order.ts
 CREATE REAL ORDER KE PAYPAL SANDBOX (POST /v2/checkout/orders)
 Target API: https://api-m.sandbox.paypal.com
 ======================================================================
-OAuth 2.0 Token acquired: [REDACTED] (1118ms)
+Acquired token in 1025ms: [REDACTED]
 
 --- HASIL PEMBUATAN ORDER NYATA ---
 Order ID (17 Karakter) : 0VJ350000M292973P
@@ -194,6 +194,7 @@ Refund Link               : https://api.sandbox.paypal.com/v2/payments/captures/
 
 ### 3.4 Automated Live E2E Verification Runner (`pnpm e2e:live` / Playwright)
 Automated end-to-end buyer authorization and settlement capture via headless Playwright against real PayPal Sandbox (`api-m.sandbox.paypal.com`):
+Verified live: 22 live sandbox captures in total: 20 ALLOW (attempt-2, after 18/20 in attempt-1), 1 STEP_UP, 1 Multi-Item.
 ```bash
 pnpm e2e:live
 ```
@@ -324,7 +325,7 @@ aegismandate/
 | **T-017** | **Documentation Kit**   | 🟢 COMPLETED | Executive README, API reference ([`docs/api.md`](docs/api.md)), demo script ([`docs/demo-script.md`](docs/demo-script.md)) | `demo §2` |
 | **T-018** | **CI/CD & Quality Gates**| 🟢 COMPLETED | GitHub Actions 7-stage CI pipeline, frozen lockfile check, production build validation | `tech §2` |
 | **T-019** | **Submission & Release**| 🟢 COMPLETED | Codebase hygiene audit, live sandbox proof, tagged candidate release `v0.9.0-rc1` | `tasks T-019` |
-| **T-029** | **Live E2E Capture Runner**| 🟢 COMPLETED | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`). 20-run consecutive gate passed (attempt-2 100% pass), 3 distinct live scenarios verified (`single` ALLOW, `stepup` with cryptographic payload-hash binding, `multi` item ALLOW). | `tech §4.3` |
+| **T-029** | **Live E2E Capture Runner**| 🟢 COMPLETED | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`). Verified live: 22 live sandbox captures in total: 20 ALLOW (attempt-2, after 18/20 in attempt-1), 1 STEP_UP, 1 Multi-Item. | `tech §4.3` |
 
 ---
 

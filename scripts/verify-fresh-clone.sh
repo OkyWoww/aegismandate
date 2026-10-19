@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "=========================================================="
-echo " MandatePay: Fresh Clone Validation (Task T-001 Verification)"
+echo " AegisMandate: Fresh Clone Validation (Task T-001 Verification)"
 echo " PayPal AI Hackathon Submission"
 echo "=========================================================="
 
@@ -10,8 +10,10 @@ echo "--> 1. Checking Node & Package Manager..."
 node -v
 if command -v pnpm &> /dev/null; then
   echo "pnpm is available: $(pnpm -v)"
+  RUNNER="pnpm"
 else
   echo "pnpm not found globally, falling back to npx/corepack..."
+  RUNNER="npx"
 fi
 
 echo "--> 2. Validating Workspace Directory Structure..."
@@ -43,9 +45,41 @@ if grep -q "paypal" apps/agent/package.json; then
 fi
 echo "PASS: apps/agent has zero paypal dependencies."
 
-echo "--> 4. Running Vitest Test Suite..."
-npx vitest run
+echo "--> 4. Typecheck (tsc -b)..."
+if [ "$RUNNER" = "pnpm" ]; then
+  pnpm typecheck
+else
+  npx tsc -b
+fi
+
+echo "--> 5. Code Quality & Boundary Linting (eslint)..."
+if [ "$RUNNER" = "pnpm" ]; then
+  pnpm lint
+else
+  npx eslint . --ext .ts,.tsx,.js,.cjs
+fi
+
+echo "--> 6. Running Vitest Test Suite..."
+if [ "$RUNNER" = "pnpm" ]; then
+  pnpm test
+else
+  npx vitest run
+fi
+
+echo "--> 7. Running Attack Suite Simulation (A-01..A-12)..."
+if [ "$RUNNER" = "pnpm" ]; then
+  pnpm attack-suite
+else
+  npx vitest run packages/sim
+fi
+
+echo "--> 8. Booting Ephemeral Server & Health Check (Smoke Suite)..."
+if [ "$RUNNER" = "pnpm" ]; then
+  pnpm smoke
+else
+  npx tsx scripts/smoke.ts
+fi
 
 echo "=========================================================="
-echo " SUCCESS: MandatePay repository bootstrap validated!"
+echo " SUCCESS: AegisMandate repository bootstrap validated!"
 echo "=========================================================="

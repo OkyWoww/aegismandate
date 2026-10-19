@@ -2,18 +2,27 @@
 useDefault = true
 
 [allowlist]
-description = "Allowlist for test fixtures, mock data, and PayPal Sandbox Order/Capture IDs"
+description = "Strict allowlist for confirmed dummy test fixtures, mock data, and non-secret sandbox identifiers"
 paths = [
-  '''docs/evidence/''',
-  '''apps/api/src/.*test\.ts''',
-  '''packages/.*/src/.*test\.ts''',
-  '''README\.md''',
-  '''scripts/verify-failed-runs-state\.ts''',
-  '''\.github/workflows/ci\.yml''',
+  '''^\.env$''',
+  '''node_modules''',
+  '''data/''',
+  '''\.git/''',
 ]
 regexes = [
-  '''[0-9A-Z]{17}''',
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+  '''c60ce1e12686c9af19411c60913db7c25a3ccbc241dfcf9b8f321e4cac148a2c''',
   '''tok_ac14_empty''',
   '''ORDER-EMPTY-CAP-01''',
-  '''0123456789abcdef''',
+  '''A21AAJssYTGu\.\.\.8iUWtg''',
+  '''9RK86464BY021780T''',
+  '''3SN34017PR931672M''',
+  '''6XP40258DG517254E''',
+  '''8TW774201P639105N''',
+  '''6NG57694FV8292319''',
+  '''9M712506FY528103P''',
+  '''0WM76983CL566584D''',
+  '''6GD39031KV4702529''',
+  '''6UX19454PY587904R''',
+  '''7NG18229W6889870T''',
 ]

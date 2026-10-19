@@ -1,5 +1,5 @@
 /**
- * MandatePay End-to-End Automated Smoke Verification Suite (Task T-016)
+ * AegisMandate End-to-End Automated Smoke Verification Suite (Task T-016)
  *
  * Verifies full HTTP Control Plane lifecycle over ephemeral services:
  * 1. GET  /health -> Service liveness probe
@@ -63,7 +63,7 @@ async function runSmokeSuite(): Promise<boolean> {
   const modeLabel = isMock ? 'MODE: MOCK' : 'MODE: LIVE SANDBOX';
 
   console.log('='.repeat(80));
-  console.log(` MANDATEPAY AUTOMATED SMOKE VERIFIER (T-016) — ${modeLabel}`);
+  console.log(` AEGIS_MANDATE AUTOMATED SMOKE VERIFIER (T-016) — ${modeLabel}`);
   console.log('='.repeat(80));
   console.log(`[Execution Mode]                   ${modeLabel}`);
   console.log(`[Config] Target Ephemeral Endpoint: ${BASE_URL}`);

@@ -4,9 +4,10 @@ import { initExecutorTables, sweepExpiredIntents } from '../apps/api/src/executo
 import { runSeed } from '../apps/stores/src/index.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 
 const DB_PATH = path.resolve(process.cwd(), './data/verify-sweeper-state.db');
-const HMAC_KEY = 'c60ce1e12686c9af19411c60913db7c25a3ccbc241dfcf9b8f321e4cac148a2c';
+const HMAC_KEY = crypto.randomBytes(32).toString('hex');
 
 if (fs.existsSync(DB_PATH)) {
   try { fs.unlinkSync(DB_PATH); } catch { /* ignore */ }

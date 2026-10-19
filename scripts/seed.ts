@@ -1,5 +1,5 @@
 /**
- * MandatePay Deterministic Seed Script Runner (T-006)
+ * AegisMandate Deterministic Seed Script Runner (T-006)
  * References:
  * - specs/demo.md §1
  * - specs/spec.md §2 (FR-13), §3.1-3.2
@@ -19,7 +19,7 @@ export { runSeed };
 
 async function main() {
   console.log('='.repeat(70));
-  console.log(' MANDATEPAY DATABASE SEED (Task T-006)');
+  console.log(' AEGIS_MANDATE DATABASE SEED (Task T-006)');
   console.log('='.repeat(70));
 
   const result = runSeed();

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
 /**
- * MandatePay Live Sandbox End-to-End Buyer Approval & Capture (Task T-017, T-029, Rule.md §65, Product.md §68)
+ * AegisMandate Live Sandbox End-to-End Buyer Approval & Capture (Task T-017, T-029, Rule.md §65, Product.md §68)
  *
  * Implements automated PayPal Sandbox buyer approval via Playwright,
  * followed by Control Plane capture execution and audit trail verification.
@@ -387,6 +387,17 @@ async function runSingleScenario(
   console.log(` Authentic Capture ID : ${capBody.capture_id}`);
   console.log(` Audit Event Ref      : ${intentId}`);
   console.log(` Audit Ledger Valid   : ${verifyBody.valid} (broken_seq=${verifyBody.broken_seq})`);
+  console.log(' Audit Event (JSON)   :');
+  console.log(JSON.stringify({
+    seq: auditRow.seq,
+    ts: auditRow.ts,
+    actor: auditRow.actor,
+    type: auditRow.type,
+    ref: auditRow.ref,
+    payload: parsedPayload,
+    prev_hash: auditRow.prev_hash,
+    hash: auditRow.hash,
+  }, null, 2));
   console.log('='.repeat(80));
 
   return {
@@ -439,7 +450,7 @@ async function main() {
     || (args.includes('stepup') ? 'stepup' : args.includes('multi') ? 'multi' : args.includes('all') ? 'all' : 'single');
 
   console.log('='.repeat(80));
-  console.log(' MANDATEPAY LIVE SANDBOX E2E VERIFICATION (PLAYWRIGHT BUYER APPROVAL)');
+  console.log(' AEGIS_MANDATE LIVE SANDBOX E2E VERIFICATION (PLAYWRIGHT BUYER APPROVAL)');
   console.log(` Target Scenario(s) : ${scenarioFlag.toUpperCase()}`);
   console.log(` Endpoint           : ${BASE_URL}`);
   console.log(` Buyer              : [REDACTED_EMAIL]`);

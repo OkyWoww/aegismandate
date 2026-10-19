@@ -1,17 +1,26 @@
-# AegisMandate — strict gitleaks config (replaces .gitleaks.toml)
+# AegisMandate — strict gitleaks config
 #
 # Design rules:
 #   1. No global pattern allowlist.
 #   2. No whole-file allowlists for README.md, ci.yml or test files.
 #   3. Paths scoped strictly to generated evidence logs (^docs[\\/]evidence[\\/]).
-#      All physical working tree secret scans run in clean clones where gitignored
+#      Working tree secret scans are run in clean clones where gitignored
 #      development files (.env, data/, node_modules) do not exist.
 #   4. Known dummy values and historical fragments are allowed as EXACT strings only.
+#   5. Extended rules included to detect modern tokens (e.g. Stripe live keys > 32 chars).
 
 title = "AegisMandate gitleaks (strict)"
 
 [extend]
 useDefault = true
+
+[[rules]]
+id = "stripe-access-token-extended"
+description = "Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data."
+regex = '''(?i)\b((sk)_(test|live)_[0-9a-zA-Z]{10,99})(?:['|\"|\n|\r|\s|\x60|;]|$)'''
+keywords = [
+    "sk_test", "sk_live",
+]
 
 [allowlist]
 description = "Generated evidence logs and exact known-dummy values only"

@@ -1,16 +1,12 @@
 # AegisMandate — strict gitleaks config (replaces .gitleaks.toml)
 #
-# Install:  Copy-Item gitleaks.strict.toml .gitleaks.toml -Force
-# Note:     Gitleaks on Windows paths requires [\\/] pattern separator support.
-#           When using Gitleaks < 8.25 (e.g. 8.18.2), use single [allowlist].
-#
-# Design rules
+# Design rules:
 #   1. No global pattern allowlist.
-#   2. No whole-file allowlists for README.md, ci.yml or test files. Known dummy
-#      values and confirmed test fixtures are allowed as EXACT strings only.
-#   3. Paths scoped strictly to generated evidence logs, local dev runtime,
-#      node_modules, and git internals.
-#   4. Do not widen this file to make a scan pass. Read each finding first.
+#   2. No whole-file allowlists for README.md, ci.yml or test files.
+#   3. Paths scoped strictly to generated evidence logs (^docs[\\/]evidence[\\/]).
+#      All physical working tree secret scans run in clean clones where gitignored
+#      development files (.env, data/, node_modules) do not exist.
+#   4. Known dummy values and historical fragments are allowed as EXACT strings only.
 
 title = "AegisMandate gitleaks (strict)"
 
@@ -18,13 +14,9 @@ title = "AegisMandate gitleaks (strict)"
 useDefault = true
 
 [allowlist]
-description = "Evidence logs, local dev files, and exact dummy fixtures"
+description = "Generated evidence logs and exact known-dummy values only"
 paths = [
-  '''docs[\\/]evidence''',
-  '''data''',
-  '''^\.env$''',
-  '''node_modules''',
-  '''\.git''',
+  '''^docs[\\/]evidence[\\/]''',
 ]
 regexes = [
   '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',

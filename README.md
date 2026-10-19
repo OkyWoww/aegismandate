@@ -7,7 +7,7 @@
 [![Vitest Test Suite](https://img.shields.io/badge/Vitest-217%20Passed-brightgreen?logo=vitest)](https://github.com/OkyWoww/mandatepay)
 [![Attack Suite](https://img.shields.io/badge/Attack%20Suite-12%2F12%20Blocked-success)](https://github.com/OkyWoww/mandatepay)
 [![PayPal Live Sandbox](https://img.shields.io/badge/PayPal%20Sandbox-20%2F20%20Gate%20Passed-003087?logo=paypal)](https://github.com/OkyWoww/mandatepay)
-[![Gitleaks](https://img.shields.io/badge/Gitleaks-0%20Leaks%20Found-brightgreen)](https://github.com/OkyWoww/mandatepay)
+[![Gitleaks](https://img.shields.io/badge/Gitleaks-0%20Leaks%20(Strict)-brightgreen)](https://github.com/OkyWoww/mandatepay)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -324,7 +324,7 @@ aegismandate/
 | **T-016** | **Local E2E Orchestration**| 🟢 COMPLETED | Single-command concurrent dev runner (`pnpm dev`) & ephemeral smoke suite | `tech §7` |
 | **T-017** | **Documentation Kit**   | 🟢 COMPLETED | Executive README, API reference ([`docs/api.md`](docs/api.md)), demo script ([`docs/demo-script.md`](docs/demo-script.md)) | `demo §2` |
 | **T-018** | **CI/CD & Quality Gates**| 🟢 COMPLETED | GitHub Actions 7-stage CI pipeline, frozen lockfile check, production build validation | `tech §2` |
-| **T-019** | **Submission & Release**| 🟢 COMPLETED | Codebase hygiene audit, live sandbox proof, tagged candidate release `v0.9.0-rc1` | `tasks T-019` |
+| **T-019** | **Submission & Release**| 🟢 COMPLETED | Codebase hygiene audit, live sandbox proof, annotated tag candidate release `v0.9.0-rc4` | `tasks T-019` |
 | **T-029** | **Live E2E Capture Runner**| 🟢 COMPLETED | Playwright automated sandbox buyer approval & live settlement capture (`pnpm e2e:live`). Verified live: 22 live sandbox captures in total: 20 ALLOW (attempt-2, after 18/20 in attempt-1), 1 STEP_UP, 1 Multi-Item. | `tech §4.3` |
 
 ---
@@ -334,6 +334,10 @@ aegismandate/
 ### Prerequisites
 - Node.js `>= 22.13.0` (Node.js 22 LTS with built-in `node:sqlite` DatabaseSync)
 - `pnpm` (`npm install -g pnpm`)
+
+> [!TIP]
+> **Judge Convenience: Mock vs. Live Mode (`pnpm smoke`)**  
+> Evaluators do not require PayPal Sandbox credentials to verify the control plane. In a clean checkout without `.env`, `pnpm smoke` executes in **`MODE: MOCK`**, verifying all 5 control plane phases (health probe, mandate retrieval, intent proposal, step-up authorization, SHA-256 ledger integrity) in ~500ms. When sandbox credentials (`PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`) are provided in `.env`, the suite automatically switches to **`MODE: LIVE SANDBOX`** for live gateway verification.
 
 ### Option A: Automated One-Command Verification
 Validate fresh clone bootstrap and workspace boundaries:

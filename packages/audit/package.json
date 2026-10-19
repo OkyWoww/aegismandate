@@ -1,6 +1,6 @@
 {
   "name": "@mandatepay/audit",
-  "version": "0.1.0",
+  "version": "0.9.0-rc4",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",

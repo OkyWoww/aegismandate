@@ -93,6 +93,8 @@ export function runSeed(options: SeedOptions = {}): SeedResult {
 
   const activeMandate = mandateService.activate('mnd_demo_001');
 
+  db.close();
+
   return {
     dbPath,
     merchantsCount: storeCounts.merchantsCount,

@@ -27,6 +27,8 @@
     "e2e:live:multi": "tsx --env-file=.env scripts/live-e2e.ts --scenario=multi",
     "e2e:live:all": "tsx --env-file=.env scripts/live-e2e.ts --scenario=all",
     "seed": "tsx scripts/seed.ts",
+    "demo:reset": "tsx scripts/demo-reset.ts",
+    "demo:seed": "tsx scripts/demo-seed.ts",
     "verify-fresh-clone": "bash scripts/verify-fresh-clone.sh"
   },
   "dependencies": {

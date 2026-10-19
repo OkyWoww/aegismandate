@@ -78,6 +78,7 @@ interface ExecutedIntentRecord {
   refusal_reason: string | null;
   approve_url?: string | null;
   expires_at?: string | null;
+  proposal_json?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -100,6 +101,7 @@ export function initExecutorTables(db: DatabaseConnection): void {
       refusal_reason TEXT,
       approve_url TEXT,
       expires_at TEXT,
+      proposal_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -127,6 +129,11 @@ export function initExecutorTables(db: DatabaseConnection): void {
   }
   try {
     db.exec('ALTER TABLE executed_intents ADD COLUMN merchant_ref TEXT;');
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE executed_intents ADD COLUMN proposal_json TEXT;');
   } catch {
     // column already exists
   }
@@ -429,6 +436,8 @@ export async function executeGoldenPath(
     };
   }
 
+  const proposalJsonStr = params.rawJson ?? JSON.stringify(proposal);
+
   // --------------------------------------------------------------------------
   // 2. Audit Event: INTENT_RECEIVED (FR-21)
   // --------------------------------------------------------------------------
@@ -596,8 +605,8 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, proposal_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
@@ -609,6 +618,7 @@ export async function executeGoldenPath(
       null,
       computedPayloadHash,
       'MANDATE_NOT_FOUND',
+      proposalJsonStr,
       now,
       now,
     );
@@ -660,8 +670,8 @@ export async function executeGoldenPath(
       if (!reserveRes.success || !reserveRes.reservation) {
         db.prepare(`
           INSERT INTO executed_intents (
-            intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, proposal_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           proposal.intent_id,
           proposal.mandate_id,
@@ -673,6 +683,7 @@ export async function executeGoldenPath(
           null,
           computedPayloadHash,
           'RESERVATION_FAILED',
+          proposalJsonStr,
           now,
           now,
         );
@@ -699,8 +710,8 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, expires_at, proposal_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
@@ -713,6 +724,7 @@ export async function executeGoldenPath(
       computedPayloadHash,
       decision.reason_codes.join(','),
       stepUpExpiresAt,
+      proposalJsonStr,
       now,
       now,
     );
@@ -742,8 +754,8 @@ export async function executeGoldenPath(
   if (!reserveRes.success || !reserveRes.reservation) {
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, proposal_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
@@ -755,6 +767,7 @@ export async function executeGoldenPath(
       null,
       computedPayloadHash,
       'RESERVATION_FAILED',
+      proposalJsonStr,
       now,
       now,
     );
@@ -811,11 +824,12 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, proposal_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
+      proposal.merchant_ref,
       'DENY',
       JSON.stringify(decision),
       'FAILED',
@@ -823,6 +837,7 @@ export async function executeGoldenPath(
       null,
       computedPayloadHash,
       refusalReason,
+      proposalJsonStr,
       now,
       now,
     );
@@ -869,8 +884,8 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, proposal_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
@@ -882,6 +897,7 @@ export async function executeGoldenPath(
       null,
       computedPayloadHash,
       refusalReason,
+      proposalJsonStr,
       now,
       now,
     );
@@ -940,8 +956,8 @@ export async function executeGoldenPath(
 
     db.prepare(`
       INSERT INTO executed_intents (
-        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, proposal_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       proposal.intent_id,
       proposal.mandate_id,
@@ -953,6 +969,7 @@ export async function executeGoldenPath(
       null,
       computedPayloadHash,
       'PAYPAL_CREATE_FAILED',
+      proposalJsonStr,
       now,
       now,
     );
@@ -1008,8 +1025,8 @@ export async function executeGoldenPath(
 
   db.prepare(`
     INSERT INTO executed_intents (
-      intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, approve_url, expires_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      intent_id, mandate_id, merchant_ref, verdict, decision_json, status, order_id, capture_id, payload_hash, refusal_reason, approve_url, expires_at, proposal_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     proposal.intent_id,
     proposal.mandate_id,
@@ -1023,6 +1040,7 @@ export async function executeGoldenPath(
     null,
     approveUrl ?? null,
     expiresAt,
+    proposalJsonStr,
     now,
     now,
   );

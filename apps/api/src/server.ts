@@ -11,7 +11,7 @@ import {
   type PurchaseIntentProposal,
 } from '@mandatepay/schemas';
 import { PayPalClient } from '@mandatepay/paypal';
-import { MandateService } from './mandate-service.js';
+import { MandateService, withReadTransaction } from './mandate-service.js';
 import {
   executeGoldenPath,
   executeApprovedStepUp,
@@ -665,6 +665,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       offset?: string;
       actor?: string;
       type?: string;
+      mandate_id?: string;
     };
   }>('/v1/audit/events', async (request, reply) => {
     const query = request.query;
@@ -681,6 +682,10 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     if (query.type) {
       conditions.push('type = ?');
       params.push(query.type);
+    }
+    if (query.mandate_id) {
+      conditions.push('(ref = ? OR payload LIKE ?)');
+      params.push(query.mandate_id, `%"mandate_id":"${query.mandate_id}"%`);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -746,6 +751,149 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       broken_seq: result.brokenAtSeq ?? null,
       reason: result.reason ?? null,
     };
+  });
+
+  // --------------------------------------------------------------------------
+  // Impact Dashboard Summary (Task T-018, spec §2)
+  // --------------------------------------------------------------------------
+  app.get<{
+    Querystring: {
+      mandate_id?: string;
+    };
+  }>('/v1/dashboard/summary', async (request, reply) => {
+    const mandateId = request.query.mandate_id || 'mnd_demo_001';
+    const nowTs = getNow();
+
+    // Lazy sweep expired intents
+    sweepExpiredIntents(db, mandateService, nowTs);
+
+    // GET /v1/dashboard/summary is read-only and polled frequently.
+    // Use deferred read transaction (BEGIN DEFERRED / COMMIT) to obtain a consistent WAL snapshot
+    // without acquiring exclusive write locks or blocking concurrent intent execution (INV-8, T-018 §2).
+    const summary = withReadTransaction(db, () => {
+      const mandate = mandateService.getMandate(mandateId);
+      if (!mandate) {
+        return null;
+      }
+
+      const spend = mandateService.getSpend(mandateId);
+      const totalBudgetMinor = mandate.total_budget_minor;
+      const capturedMinor = spend.captured_minor;
+      const reservedMinor = spend.reserved_minor;
+      const remainingMinor = Math.max(0, totalBudgetMinor - capturedMinor - reservedMinor);
+
+      // Blocked intents (verdict = 'DENY')
+      const denyRows = db
+        .prepare(
+          `SELECT intent_id, proposal_json
+           FROM executed_intents
+           WHERE mandate_id = ? AND verdict = 'DENY'`,
+        )
+        .all(mandateId) as Array<{ intent_id: string; proposal_json: string | null }>;
+
+      let attemptedTotalMinor = 0;
+      let unknownAmountCount = 0;
+
+      for (const row of denyRows) {
+        let claimedAmount: number | null = null;
+        if (row.proposal_json) {
+          try {
+            const p = JSON.parse(row.proposal_json);
+            if (typeof p.claimed_total_minor === 'number' && Number.isFinite(p.claimed_total_minor)) {
+              claimedAmount = p.claimed_total_minor;
+            }
+          } catch {
+            // ignore malformed JSON
+          }
+        }
+        if (claimedAmount === null) {
+          const auditRow = db
+            .prepare(
+              "SELECT payload FROM audit_events WHERE ref = ? AND type = 'INTENT_RECEIVED' ORDER BY seq DESC LIMIT 1",
+            )
+            .get(row.intent_id) as { payload: string } | undefined;
+          if (auditRow) {
+            try {
+              const p = JSON.parse(auditRow.payload);
+              if (typeof p.claimed_total_minor === 'number' && Number.isFinite(p.claimed_total_minor)) {
+                claimedAmount = p.claimed_total_minor;
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        if (claimedAmount !== null) {
+          attemptedTotalMinor += claimedAmount;
+        } else {
+          unknownAmountCount += 1;
+        }
+      }
+
+      // Derived from the absence of order creation (order_id IS NOT NULL or ORDER_CREATED audit events) for DENY intents (T-018 §2)
+      const denyWithOrders = db
+        .prepare(
+          `SELECT count(*) as count FROM executed_intents
+           WHERE mandate_id = ? AND verdict = 'DENY' AND (
+             order_id IS NOT NULL OR EXISTS (
+               SELECT 1 FROM audit_events a WHERE a.ref = executed_intents.intent_id AND a.type = 'ORDER_CREATED'
+             )
+           )`,
+        )
+        .get(mandateId) as { count: number };
+
+      // Verified / captured count
+      const capturedRow = db
+        .prepare(
+          `SELECT count(*) as count
+           FROM executed_intents
+           WHERE mandate_id = ? AND status = 'CAPTURED'`,
+        )
+        .get(mandateId) as { count: number };
+
+      // Audit chain status
+      const auditResult = verifyAuditLedger(db);
+      const lastEvent = db
+        .prepare('SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1')
+        .get() as { seq: number; hash: string } | undefined;
+
+      return {
+        mandate: {
+          id: mandateId,
+          currency: mandate.currency,
+          total_budget_minor: totalBudgetMinor,
+          captured_minor: capturedMinor,
+          reserved_minor: reservedMinor,
+          remaining_minor: remainingMinor,
+        },
+        blocked: {
+          count: denyRows.length,
+          attempted_total_minor: attemptedTotalMinor,
+          unknown_amount_count: unknownAmountCount,
+          paypal_calls: denyWithOrders.count,
+        },
+        verified: {
+          count: capturedRow.count,
+          captured_total_minor: capturedMinor,
+        },
+        audit: {
+          head_seq: lastEvent ? Number(lastEvent.seq) : 0,
+          head_hash: lastEvent ? String(lastEvent.hash) : '0'.repeat(64),
+          chain_valid: auditResult.valid,
+        },
+        generated_at: nowTs,
+      };
+    });
+
+    if (!summary) {
+      return reply.code(404).send({
+        error: 'MANDATE_NOT_FOUND',
+        message: `Mandate '${mandateId}' was not found`,
+      });
+    }
+
+    return reply.code(200).send(summary);
   });
 
   // --------------------------------------------------------------------------

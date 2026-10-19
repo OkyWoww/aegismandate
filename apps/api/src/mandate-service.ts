@@ -108,6 +108,33 @@ export function withImmediateTransaction<T>(
   throw new Error('Transaction failed after maximum retries');
 }
 
+/**
+ * Executes read-only queries inside a deferred read transaction (BEGIN DEFERRED / COMMIT).
+ * Provides a consistent WAL snapshot without acquiring an exclusive write lock,
+ * allowing concurrent writes while reading.
+ */
+export function withReadTransaction<T>(
+  db: DatabaseConnection,
+  fn: () => T,
+): T {
+  if (db.isInTransaction()) {
+    return fn();
+  }
+  db.exec('BEGIN DEFERRED');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback failure
+    }
+    throw err;
+  }
+}
+
 export interface ReserveParams {
   mandateId: string;
   intentId: string;

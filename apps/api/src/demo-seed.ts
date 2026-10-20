@@ -219,7 +219,11 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
   const db = openDb(dbPath);
   try {
     const catalogResolver = createStoreCatalogResolver(db);
-    const mandateService = new MandateService(db, hmacKey, () => now.toISOString());
+    // Use a mutable clock reference so MandateService.reserve/captureReservation/releaseReservation
+    // emit BUDGET_* audit events at the same strictly-increasing timestamp as the surrounding
+    // executor calls — prevents backward timestamps in the Audit Explorer (Finding #4).
+    let currentTs = new Date(now.getTime() + 1000).toISOString();
+    const mandateService = new MandateService(db, hmacKey, () => currentTs);
     const payPalClient = new PayPalClient({
       clientId: 'sandbox_client_id_dev_mock',
       clientSecret: 'sandbox_client_secret_dev_mock',
@@ -247,7 +251,7 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
       },
     };
 
-    const t1 = new Date(now.getTime() + 1000).toISOString();
+    currentTs = new Date(now.getTime() + 1000).toISOString();
     const res1 = await executeGoldenPath({
       proposal: penProposal,
       payPalClient,
@@ -255,21 +259,21 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
       catalogResolver,
       db,
       hmacKey,
-      now: t1,
+      now: currentTs,
     });
 
     if (res1.verdict !== 'ALLOW' || !res1.orderId) {
       throw new Error(`Failed to execute pen pack intent: ${JSON.stringify(res1)}`);
     }
 
-    const t2 = new Date(now.getTime() + 2000).toISOString();
+    currentTs = new Date(now.getTime() + 2000).toISOString();
     const capRes = await captureApprovedOrder({
       intentId: 'int_demo_pen_pack_01',
       payPalClient,
       mandateService,
       catalogResolver,
       db,
-      now: t2,
+      now: currentTs,
     });
 
     if (capRes.status !== 'CAPTURED') {
@@ -295,7 +299,7 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
       },
     };
 
-    const t3 = new Date(now.getTime() + 3000).toISOString();
+    currentTs = new Date(now.getTime() + 3000).toISOString();
     const res2 = await executeGoldenPath({
       proposal: attackProposal,
       payPalClient,
@@ -303,7 +307,7 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
       catalogResolver,
       db,
       hmacKey,
-      now: t3,
+      now: currentTs,
     });
 
     if (res2.verdict !== 'DENY') {
@@ -330,7 +334,7 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
       },
     };
 
-    const t4 = new Date(now.getTime() + 4000).toISOString();
+    currentTs = new Date(now.getTime() + 4000).toISOString();
     const res3 = await executeGoldenPath({
       proposal: stepUpProposal,
       payPalClient,
@@ -338,7 +342,7 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
       catalogResolver,
       db,
       hmacKey,
-      now: t4,
+      now: currentTs,
     });
 
     if (res3.verdict !== 'STEP_UP') {

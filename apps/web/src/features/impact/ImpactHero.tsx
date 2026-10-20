@@ -59,17 +59,23 @@ export function ImpactHero({ mandateId }: ImpactHeroProps) {
     ? formatMinor(data.blocked.attempted_total_minor, currency)
     : '';
 
+  // Finding #5: "attempted & blocked" wording to distinguish attempt from block (T-018 audit)
   const blockedSubLine = data
-    ? `${data.blocked.count} attack${data.blocked.count === 1 ? '' : 's'} blocked · ${data.blocked.paypal_calls} PayPal call${data.blocked.paypal_calls === 1 ? '' : 's'}${data.blocked.unknown_amount_count > 0 ? ` (${data.blocked.unknown_amount_count} unparsed)` : ''}`
+    ? `${data.blocked.count} attack${data.blocked.count === 1 ? '' : 's'} attempted & blocked · ${data.blocked.paypal_calls} PayPal call${data.blocked.paypal_calls === 1 ? '' : 's'}${data.blocked.unknown_amount_count > 0 ? ` (${data.blocked.unknown_amount_count} unparsed)` : ''}`
     : '';
 
   // ── Verified Spend card ───────────────────────────────────────────────────
+  const isMock = data?.execution_mode === 'MOCK';
+
   const verifiedValue = data
     ? formatMinor(data.verified.captured_total_minor, currency)
     : '';
 
+  // rule.md §3.6: clearly label mock seed data; never misrepresent as live PayPal sandbox capture
   const verifiedSubLine = data
-    ? `${data.verified.count} order${data.verified.count === 1 ? '' : 's'} captured via PayPal sandbox`
+    ? isMock
+      ? `${data.verified.count} order${data.verified.count === 1 ? '' : 's'} captured (mock seed)`
+      : `${data.verified.count} order${data.verified.count === 1 ? '' : 's'} captured via PayPal sandbox`
     : '';
 
   return (
@@ -102,6 +108,7 @@ export function ImpactHero({ mandateId }: ImpactHeroProps) {
           isLoading={isLoading}
           isStale={isStale}
           isEmpty={isEmpty}
+          {...(isMock ? { badge: 'MOCK SEED' } : {})}
           onClick={() => openDrawer('captured')}
         />
       </div>

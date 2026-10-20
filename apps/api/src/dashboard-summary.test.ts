@@ -111,6 +111,9 @@ describe('Impact Dashboard Summary Backend (Task T-018 §2, §7 Criteria 1–5 &
     expect(summary.audit.head_hash).toBe(lastAuditRow.hash);
     expect(summary.audit.chain_valid).toBe(auditLedger.valid);
     expect(summary.audit.chain_valid).toBe(true);
+
+    // execution_mode: demo seed uses createMockPayPalFetch() → ORDER-SANDBOX-* IDs → MOCK (rule.md §3.6)
+    expect(summary.execution_mode).toBe('MOCK');
   });
 
   // --------------------------------------------------------------------------

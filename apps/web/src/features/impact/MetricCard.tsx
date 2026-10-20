@@ -25,6 +25,8 @@ export interface MetricCardProps {
   isStale: boolean;
   /** Whether the metric is in an empty / no-activity state */
   isEmpty: boolean;
+  /** Optional badge label shown in the card header (e.g. "MOCK SEED") */
+  badge?: string;
   /** Called when the card is clicked (e.g. opens drawer) */
   onClick?: () => void;
 }
@@ -46,6 +48,7 @@ export function MetricCard({
   isLoading,
   isStale,
   isEmpty,
+  badge,
   onClick,
 }: MetricCardProps) {
   // Animated value swap: track the displayed value independently so we can
@@ -83,15 +86,27 @@ export function MetricCard({
           {title}
         </span>
 
-        {/* Stale badge */}
-        {isStale && !isLoading && (
-          <span
-            data-testid="stale-badge"
-            className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950 border border-amber-700 text-amber-400"
-          >
-            stale · retrying
-          </span>
-        )}
+        <div className="flex items-center gap-1.5">
+          {/* Arbitrary badge (e.g. "MOCK SEED") — rule.md §3.6 */}
+          {badge && !isLoading && (
+            <span
+              data-testid="mode-badge"
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400"
+            >
+              {badge}
+            </span>
+          )}
+
+          {/* Stale badge */}
+          {isStale && !isLoading && (
+            <span
+              data-testid="stale-badge"
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950 border border-amber-700 text-amber-400"
+            >
+              stale · retrying
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Big value area */}

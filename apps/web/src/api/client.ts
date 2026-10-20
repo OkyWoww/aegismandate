@@ -126,6 +126,32 @@ export class ApiClient {
     return res.json() as Promise<ProposeResponse>;
   }
 
+  public async getIntent(id: string): Promise<{
+    intent_id: string;
+    verdict: string;
+    status: string;
+    payload_hash: string | null;
+    order_id: string | null;
+    capture_id: string | null;
+    refusal_reason: string | null;
+    approve_url: string | null;
+    expires_at: string | null;
+  }> {
+    const res = await fetch(`${this.baseUrl}/v1/intents/${id}`);
+    if (!res.ok) throw new Error(`Failed to fetch intent ${id} (${res.status})`);
+    return res.json() as Promise<{
+      intent_id: string;
+      verdict: string;
+      status: string;
+      payload_hash: string | null;
+      order_id: string | null;
+      capture_id: string | null;
+      refusal_reason: string | null;
+      approve_url: string | null;
+      expires_at: string | null;
+    }>;
+  }
+
   public async approveIntent(id: string, expectedPayloadHash?: string): Promise<ApproveResponse> {
     const init: RequestInit = {
       method: 'POST',

@@ -166,9 +166,20 @@ export function App() {
   };
 
   // Handle simulation execution
-  const handleScenarioExecuted = (res: ProposeResponse, sc: { amountMinor: number; payload: Record<string, unknown> }) => {
+  // Fetch payload_hash from server — never compute it in the browser (FR-28).
+  const handleScenarioExecuted = async (res: ProposeResponse, sc: { amountMinor: number; payload: Record<string, unknown> }) => {
     loadBackendData();
     if (res.verdict === 'STEP_UP') {
+      // Fetch the server-stored payload_hash for this intent (FR-28: must come from server, not browser)
+      let payloadHash = '';
+      try {
+        const intentDetail = await api.getIntent(res.intent_id);
+        payloadHash = intentDetail.payload_hash ?? '';
+      } catch {
+        // If fetch fails, leave hash empty — approve call will return 422 PAYLOAD_HASH_REQUIRED
+        // which is surfaced in the UI via StepUpApprovalsQueue's statusMap.
+      }
+
       const newProposal: PendingStepUpProposal = {
         intentId: res.intent_id,
         merchantRef: String(sc.payload['merchant_ref'] ?? 'mrc_demo_store'),
@@ -182,7 +193,7 @@ export function App() {
         currency: 'USD',
         rationale: String(sc.payload['rationale'] ?? ''),
         reasonCodes: res.decision?.reason_codes ?? ['OVER_AUTO_LIMIT'],
-        payloadHash: 'hash_' + Math.random().toString(36).slice(2, 18),
+        payloadHash,
         riskScore: res.decision?.risk?.score,
       };
 

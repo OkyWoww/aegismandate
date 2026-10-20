@@ -101,7 +101,7 @@ describe('MetricCard — stale badge (Criterion 8)', () => {
       <MetricCard
         title="Verified Spend"
         value="$9.00"
-        subLine="1 order captured via PayPal sandbox"
+        subLine="1 order captured (mock seed)"
         isLoading={false}
         isStale={true}
         isEmpty={false}
@@ -240,3 +240,64 @@ describe('AuditDrawer — closed state', () => {
     expect(html).toBe('');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. MetricCard — MOCK SEED badge (Finding #2 / rule.md §3.6)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('MetricCard — MOCK SEED badge (rule.md §3.6)', () => {
+  it('shows "MOCK SEED" badge when badge prop is provided', () => {
+    const html = renderToString(
+      <MetricCard
+        title="Verified Spend"
+        value="$9.00"
+        subLine="1 order captured (mock seed)"
+        isLoading={false}
+        isStale={false}
+        isEmpty={false}
+        badge="MOCK SEED"
+      />,
+    );
+
+    expect(html).toContain('data-testid="mode-badge"');
+    expect(html).toContain('MOCK SEED');
+    // Must still show the value
+    expect(html).toContain('data-testid="metric-value"');
+  });
+
+  it('does NOT show mode badge when badge prop is omitted', () => {
+    const html = renderToString(
+      <MetricCard
+        title="Verified Spend"
+        value="$9.00"
+        subLine="1 order captured via PayPal sandbox"
+        isLoading={false}
+        isStale={false}
+        isEmpty={false}
+      />,
+    );
+
+    expect(html).not.toContain('data-testid="mode-badge"');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. MetricCard — blocked sub-line copy (Finding #3)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('MetricCard — blocked sub-line wording (Finding #3)', () => {
+  it('sub-line says "attempted & blocked" not just "blocked"', () => {
+    const html = renderToString(
+      <MetricCard
+        title="Blocked"
+        value="$500.00"
+        subLine="1 attack attempted & blocked · 0 PayPal calls"
+        isLoading={false}
+        isStale={false}
+        isEmpty={false}
+      />,
+    );
+
+    expect(html).toContain('attempted &amp; blocked');
+    expect(html).not.toContain('attacks blocked ·');
+  });
+});
+

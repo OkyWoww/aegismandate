@@ -852,6 +852,22 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         )
         .get(mandateId) as { count: number };
 
+      // Execution mode: MOCK if any captured order/capture ID bears a mock prefix (rule.md §3.6).
+      // Detects: ORDER-SANDBOX-* / CAPTURE-SANDBOX-* produced by createMockPayPalFetch().
+      const capturedOrderRow = db
+        .prepare(
+          `SELECT order_id, capture_id
+           FROM executed_intents
+           WHERE mandate_id = ? AND status = 'CAPTURED'
+           LIMIT 1`,
+        )
+        .get(mandateId) as { order_id: string | null; capture_id: string | null } | undefined;
+
+      const isMockMode =
+        !capturedOrderRow ||
+        (capturedOrderRow.order_id?.startsWith('ORDER-SANDBOX-') ?? false) ||
+        (capturedOrderRow.capture_id?.startsWith('CAPTURE-SANDBOX-') ?? false);
+
       // Audit chain status
       const auditResult = verifyAuditLedger(db);
       const lastEvent = db
@@ -882,6 +898,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
           head_hash: lastEvent ? String(lastEvent.hash) : '0'.repeat(64),
           chain_valid: auditResult.valid,
         },
+        execution_mode: isMockMode ? 'MOCK' : 'LIVE',
         generated_at: nowTs,
       };
     });

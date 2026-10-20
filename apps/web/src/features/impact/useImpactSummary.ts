@@ -44,6 +44,8 @@ export interface DashboardSummary {
   blocked: DashboardBlocked;
   verified: DashboardVerified;
   audit: DashboardAudit;
+  /** 'MOCK' when captured orders bear sandbox-mock IDs; 'LIVE' for real PayPal sandbox (rule.md §3.6) */
+  execution_mode: 'MOCK' | 'LIVE';
   generated_at: string;
 }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ShieldCheck,
   Lock,
@@ -50,27 +50,19 @@ const INITIAL_MANDATE_DATA: MandateResponse = {
   },
 };
 
-// Initial seeded step-up proposal for demo ($45.00 Architect Lamp)
-const INITIAL_STEP_UP_PROPOSALS: PendingStepUpProposal[] = [
-  {
-    intentId: 'int_stepup_lamp_demo',
-    merchantRef: 'mrc_demo_store',
-    items: [
-      {
-        sku: 'SKU-DESK-LAMP',
-        name: 'Architect LED Desk Lamp',
-        qty: 1,
-        unitPriceMinor: 4500,
-      },
-    ],
-    totalMinor: 4500,
-    currency: 'USD',
-    rationale: 'Purchase architect desk lamp with clamp mount and color temperature adjustments',
-    reasonCodes: ['OVER_AUTO_LIMIT'],
-    payloadHash: 'a718f430b8d8102384a1c5d9018e47bf10283c7104b610fa7284918c57102e81',
-    riskScore: 20,
-  },
-];
+// Step-up proposals are NEVER hardcoded: the queue is hydrated from the backend so every
+// Approve click targets a real intent_id + server-stored payload_hash (FR-18, FR-28).
+// Statuses that still belong in the operator queue (mirrors GET /v1/approvals filter).
+const QUEUED_STEP_UP_STATUSES = new Set(['PENDING_APPROVAL', 'APPROVED', 'AWAITING_PAYER_APPROVAL']);
+
+// Display-only names for demo catalog SKUs (pricing/verification always happens server-side).
+const SKU_DISPLAY_NAMES: Record<string, string> = {
+  'SKU-DESK-LAMP': 'Architect LED Desk Lamp',
+  'SKU-PEN-PACK': 'Gel Pen 10-Pack',
+  'SKU-NOTEBOOK': 'Executive Hardcover Notebook',
+  'SKU-CLEAN-CODE': 'Clean Code: Handbook of Agile Software Craftsmanship',
+  'SKU-STAND-DESK': 'Motorized Adjustable Standing Desk',
+};
 
 // Initial seeded audit events
 const INITIAL_AUDIT_EVENTS: AuditEventItem[] = [
@@ -129,9 +121,78 @@ const INITIAL_AUDIT_EVENTS: AuditEventItem[] = [
 export function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'console' | 'architecture'>('dashboard');
   const [mandateData, setMandateData] = useState<MandateResponse>(INITIAL_MANDATE_DATA);
-  const [pendingApprovals, setPendingApprovals] = useState<PendingStepUpProposal[]>(INITIAL_STEP_UP_PROPOSALS);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingStepUpProposal[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEventItem[]>(INITIAL_AUDIT_EVENTS);
   const [isConnected, setIsConnected] = useState<boolean>(false);
+
+  // Latest queue snapshot for the polling callback (avoids stale closures).
+  const pendingApprovalsRef = useRef<PendingStepUpProposal[]>([]);
+  useEffect(() => {
+    pendingApprovalsRef.current = pendingApprovals;
+  }, [pendingApprovals]);
+
+  /**
+   * Rebuild the step-up queue from server truth:
+   * - candidate intent IDs = INTENT_DECIDED events with verdict STEP_UP (+ IDs already queued)
+   * - status / payload_hash / verified total = GET /v1/intents/:id
+   * - line items = INTENT_RECEIVED audit payload
+   */
+  const syncPendingApprovals = useCallback(async (events: AuditEventItem[]) => {
+    const receivedPayloads = new Map<string, Record<string, unknown>>();
+    const candidateIds = new Set<string>();
+    for (const e of events) {
+      if (e.type === 'INTENT_RECEIVED') receivedPayloads.set(e.ref, e.payload);
+      if (e.type === 'INTENT_DECIDED' && e.payload['verdict'] === 'STEP_UP') candidateIds.add(e.ref);
+    }
+    for (const p of pendingApprovalsRef.current) candidateIds.add(p.intentId);
+    if (candidateIds.size === 0) return;
+
+    const resolved = await Promise.all(
+      [...candidateIds].map(async (intentId): Promise<PendingStepUpProposal | null> => {
+        const existing = pendingApprovalsRef.current.find((p) => p.intentId === intentId);
+        try {
+          const intent = await api.getIntent(intentId);
+          if (intent.verdict !== 'STEP_UP' || !QUEUED_STEP_UP_STATUSES.has(intent.status)) return null;
+
+          const decision = intent.decision;
+          const serverHash = intent.payload_hash ?? '';
+          if (existing) return { ...existing, payloadHash: serverHash || existing.payloadHash };
+
+          const received = receivedPayloads.get(intentId) ?? {};
+          const rawItems = Array.isArray(received['items'])
+            ? (received['items'] as Array<{ sku: string; qty: number; claimed_unit_price_minor: number }>)
+            : [];
+          const items = rawItems.map((it) => ({
+            sku: it.sku,
+            name: SKU_DISPLAY_NAMES[it.sku] ?? it.sku,
+            qty: it.qty,
+            unitPriceMinor: it.claimed_unit_price_minor,
+          }));
+
+          return {
+            intentId: intent.intent_id,
+            merchantRef: String(received['merchant_ref'] ?? 'unknown_merchant'),
+            items,
+            totalMinor:
+              decision?.verified_total_minor ??
+              Number(received['claimed_total_minor'] ?? items.reduce((s, it) => s + it.unitPriceMinor * it.qty, 0)),
+            currency: String(received['currency'] ?? 'USD'),
+            rationale: '',
+            reasonCodes: decision?.reason_codes ?? [],
+            payloadHash: serverHash,
+            riskScore: decision?.risk?.score,
+          };
+        } catch {
+          // Backend unreachable for this intent — keep what we already show, never invent data.
+          return existing ?? null;
+        }
+      }),
+    );
+
+    const fresh = resolved.filter((p): p is PendingStepUpProposal => p !== null);
+    // Preserve proposals added while this sync was in flight (e.g. from the attack console).
+    setPendingApprovals((prev) => [...fresh, ...prev.filter((p) => !candidateIds.has(p.intentId))]);
+  }, []);
 
   // Poll real backend if available
   const loadBackendData = useCallback(async () => {
@@ -147,11 +208,12 @@ export function App() {
       const auditRes = await api.getAuditEvents({ limit: 50 });
       if (auditRes.events && auditRes.events.length > 0) {
         setAuditEvents(auditRes.events);
+        await syncPendingApprovals(auditRes.events);
       }
     } catch {
       // Fallback
     }
-  }, []);
+  }, [syncPendingApprovals]);
 
   useEffect(() => {
     loadBackendData();
@@ -185,7 +247,7 @@ export function App() {
         merchantRef: String(sc.payload['merchant_ref'] ?? 'mrc_demo_store'),
         items: (sc.payload['items'] as Array<{ sku: string; name?: string; qty: number; claimed_unit_price_minor: number }>).map((it) => ({
           sku: it.sku,
-          name: it.sku === 'SKU-DESK-LAMP' ? 'Architect LED Desk Lamp' : it.sku,
+          name: SKU_DISPLAY_NAMES[it.sku] ?? it.sku,
           qty: it.qty,
           unitPriceMinor: it.claimed_unit_price_minor,
         })),

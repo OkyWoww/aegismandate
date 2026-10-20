@@ -102,6 +102,25 @@ const getBaseUrl = (): string => {
 
 const API_BASE_URL = getBaseUrl();
 
+/** Response shape of GET /v1/intents/:id (apps/api/src/server.ts). */
+export interface IntentDetail {
+  intent_id: string;
+  mandate_id?: string;
+  verdict: string;
+  status: string;
+  payload_hash: string | null;
+  order_id: string | null;
+  capture_id: string | null;
+  refusal_reason: string | null;
+  approve_url: string | null;
+  expires_at: string | null;
+  decision?: {
+    reason_codes?: string[];
+    risk?: { score: number; signals?: string[] };
+    verified_total_minor?: number | null;
+  };
+}
+
 export class ApiClient {
   private readonly baseUrl: string;
 
@@ -130,30 +149,10 @@ export class ApiClient {
     return res.json() as Promise<ProposeResponse>;
   }
 
-  public async getIntent(id: string): Promise<{
-    intent_id: string;
-    verdict: string;
-    status: string;
-    payload_hash: string | null;
-    order_id: string | null;
-    capture_id: string | null;
-    refusal_reason: string | null;
-    approve_url: string | null;
-    expires_at: string | null;
-  }> {
+  public async getIntent(id: string): Promise<IntentDetail> {
     const res = await fetch(`${this.baseUrl}/v1/intents/${id}`);
     if (!res.ok) throw new Error(`Failed to fetch intent ${id} (${res.status})`);
-    return res.json() as Promise<{
-      intent_id: string;
-      verdict: string;
-      status: string;
-      payload_hash: string | null;
-      order_id: string | null;
-      capture_id: string | null;
-      refusal_reason: string | null;
-      approve_url: string | null;
-      expires_at: string | null;
-    }>;
+    return res.json() as Promise<IntentDetail>;
   }
 
   public async approveIntent(

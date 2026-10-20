@@ -58,6 +58,10 @@ export interface ApproveResponse {
   intent_id: string;
   order_id?: string | undefined;
   capture_id?: string | undefined;
+  /** PayPal sandbox buyer approval URL (present when status is AWAITING_PAYER_APPROVAL) */
+  approve_url?: string | undefined;
+  /** Human-readable error message returned by the server on 4xx responses */
+  message?: string | undefined;
   error?: string | undefined;
   refusal_reason?: string | undefined;
 }
@@ -152,13 +156,20 @@ export class ApiClient {
     }>;
   }
 
-  public async approveIntent(id: string, expectedPayloadHash?: string): Promise<ApproveResponse> {
-    const init: RequestInit = {
+  public async approveIntent(
+    id: string,
+    expectedPayloadHash: string,
+    ownerToken: string,
+  ): Promise<ApproveResponse> {
+    const res = await fetch(`${this.baseUrl}/v1/intents/${id}/approve`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      ...(expectedPayloadHash ? { body: JSON.stringify({ expected_payload_hash: expectedPayloadHash }) } : {}),
-    };
-    const res = await fetch(`${this.baseUrl}/v1/intents/${id}/approve`, init);
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ownerToken}`,
+      },
+      body: JSON.stringify({ expected_payload_hash: expectedPayloadHash }),
+    });
+    // Return parsed body regardless of HTTP status so callers can inspect error fields.
     return res.json() as Promise<ApproveResponse>;
   }
 

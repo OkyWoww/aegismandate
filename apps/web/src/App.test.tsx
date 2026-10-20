@@ -143,6 +143,31 @@ describe('MandatePay Dashboard & Web UI (Task T-015, specs/design.md §9, demo.m
       const html = renderToString(<StepUpApprovalsQueue proposals={[]} />);
       expect(html).toContain('No step-up approvals pending review');
     });
+
+    it('renders owner key toggle button in "no key" state when sessionStorage is empty (SSR / first visit)', () => {
+      // In Node/SSR there is no window.sessionStorage, so readSessionToken() returns ''.
+      const html = renderToString(<StepUpApprovalsQueue proposals={mockProposals} />);
+
+      // The key toggle button must always be present
+      expect(html).toContain('data-testid="owner-key-toggle"');
+      // No key stored → button must say "No Owner Key", never expose a hardcoded secret
+      expect(html).toContain('No Owner Key');
+      expect(html).not.toContain('Owner Key Set');
+      // The key input panel is hidden by default (not rendered until toggled or approve clicked)
+      expect(html).not.toContain('data-testid="owner-key-input-panel"');
+      // Absolutely no secret must appear anywhere in the rendered output
+      expect(html).not.toContain('mp_owner_sec_');
+    });
+
+    it('renders approve button with correct data-testid for programmatic access', () => {
+      const html = renderToString(<StepUpApprovalsQueue proposals={mockProposals} />);
+
+      expect(html).toContain('data-testid="approve-btn-int_lamp_test_01"');
+      // No status panel shown initially
+      expect(html).not.toContain('data-testid="status-captured-int_lamp_test_01"');
+      expect(html).not.toContain('data-testid="status-awaiting-int_lamp_test_01"');
+      expect(html).not.toContain('data-testid="status-failed-int_lamp_test_01"');
+    });
   });
 
   // --------------------------------------------------------------------------

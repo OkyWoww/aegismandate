@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Terminal, Play, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { api, type ProposeResponse } from '../api/client.js';
+import { useImpactSummary } from '../features/impact/useImpactSummary.js';
 
 interface ScenarioConfig {
   id: string;
@@ -98,11 +99,18 @@ const DEMO_SCENARIOS: ScenarioConfig[] = [
 
 interface AttackSimulationConsoleProps {
   onScenarioExecuted?: (response: ProposeResponse, scenario: ScenarioConfig) => void;
+  mandateId?: string;
+  executionMode?: 'MOCK' | 'LIVE';
 }
 
 export const AttackSimulationConsole: React.FC<AttackSimulationConsoleProps> = ({
   onScenarioExecuted,
+  mandateId = 'mnd_demo_001',
+  executionMode: explicitExecutionMode,
 }) => {
+  const { data: summaryData } = useImpactSummary(mandateId);
+  const activeMode = explicitExecutionMode ?? summaryData?.execution_mode ?? 'MOCK';
+
   const [selectedScenario, setSelectedScenario] = useState<ScenarioConfig>(DEMO_SCENARIOS[0]!);
   const [running, setRunning] = useState(false);
   const [executionResult, setExecutionResult] = useState<ProposeResponse | null>(null);
@@ -136,22 +144,47 @@ export const AttackSimulationConsole: React.FC<AttackSimulationConsoleProps> = (
 
   return (
     <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur space-y-4">
-      <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+      <div className="flex items-center justify-between border-b border-slate-800 pb-4 flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
             <Terminal className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-base font-bold text-white tracking-tight">Attack Simulation & Live Console</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-bold text-white tracking-tight">Attack Simulation &amp; Live Console</h3>
+              <span
+                data-testid="console-execution-mode-badge"
+                className={`text-[10px] font-mono px-2 py-0.5 rounded border uppercase font-bold flex items-center gap-1.5 ${
+                  activeMode === 'LIVE'
+                    ? 'bg-emerald-950/70 text-emerald-300 border-emerald-800/80'
+                    : 'bg-amber-950/70 text-amber-300 border-amber-800/80'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${activeMode === 'LIVE' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                {activeMode === 'LIVE' ? 'LIVE SANDBOX' : 'MOCK SEED'}
+              </span>
+            </div>
             <p className="text-xs text-slate-400">
-              Interactive test console for evaluating real-time deterministic policy engine gating
+              Interactive test console for evaluating real-time deterministic policy engine gating (scripted replay)
             </p>
           </div>
         </div>
 
-        <span className="text-xs font-mono px-2.5 py-1 rounded bg-blue-950 text-blue-300 border border-blue-800">
-          Demo Scenarios 1–4
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            data-testid="console-mode-label"
+            className={`text-xs font-mono px-2.5 py-1 rounded border font-semibold ${
+              activeMode === 'LIVE'
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                : 'bg-amber-950 text-amber-300 border-amber-800'
+            }`}
+          >
+            Mode: {activeMode}
+          </span>
+          <span className="text-xs font-mono px-2.5 py-1 rounded bg-blue-950 text-blue-300 border border-blue-800">
+            Demo Scenarios 1–4
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">

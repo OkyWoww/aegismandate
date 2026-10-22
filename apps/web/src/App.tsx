@@ -366,7 +366,10 @@ export function App() {
 
         {activeTab === 'console' && (
           <div className="space-y-8">
-            <AttackSimulationConsole onScenarioExecuted={handleScenarioExecuted} />
+            <AttackSimulationConsole
+              onScenarioExecuted={handleScenarioExecuted}
+              mandateId={DEMO_MANDATE_ID}
+            />
 
             {/* Step-Up Approvals Queue also accessible in console tab if items are queued */}
             {(pendingApprovals.length > 0 || awaitingPayer.length > 0) && (

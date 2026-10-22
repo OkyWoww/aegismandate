@@ -1,5 +1,16 @@
-import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, XCircle, ArrowUpRight, ShieldAlert, Hash, KeyRound, ExternalLink } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  ArrowUpRight,
+  ShieldAlert,
+  Hash,
+  KeyRound,
+  ExternalLink,
+  Clock,
+  Hourglass,
+} from 'lucide-react';
 import { formatMinorUnits } from '../utils/format.js';
 import { api, type ApproveResponse } from '../api/client.js';
 
@@ -7,7 +18,7 @@ import { api, type ApproveResponse } from '../api/client.js';
 const SESSION_KEY = 'aegis_owner_key';
 
 /** Read persisted owner key from sessionStorage, empty string when unavailable (SSR / not set). */
-function readSessionToken(): string {
+export function readSessionToken(): string {
   try {
     return (typeof window !== 'undefined' && window.sessionStorage.getItem(SESSION_KEY)) || '';
   } catch {
@@ -23,14 +34,27 @@ export interface PendingStepUpProposal {
   currency: string;
   rationale: string;
   reasonCodes: string[];
+  /** Server-stored payload hash, forwarded verbatim as expected_payload_hash (FR-28). */
   payloadHash: string;
   riskScore?: number | undefined;
+  /** Authorization deadline (step-up TTL, or payer-approval TTL once the order exists). */
+  expiresAt?: string | null | undefined;
+  orderId?: string | null | undefined;
+  /** PayPal sandbox buyer approval URL (only after owner approval). */
+  approveUrl?: string | null | undefined;
 }
 
 interface StepUpApprovalsQueueProps {
+  /** Intents awaiting the OWNER's decision (GET /v1/approvals → approvals). */
   proposals: PendingStepUpProposal[];
+  /** Intents the owner already approved; the BUYER must approve on PayPal Sandbox. */
+  awaitingPayer?: PendingStepUpProposal[];
+  /** Shown instead of the empty state when the queue could not be loaded (e.g. no Owner Key). */
+  notice?: string | null;
   onApproved?: (intentId: string, result: ApproveResponse) => void;
   onRejected?: (intentId: string) => void;
+  /** Fired when the owner finishes editing the key so the parent can reload the queue. */
+  onOwnerKeyChange?: (token: string) => void;
 }
 
 // Per-intent status variants
@@ -39,10 +63,84 @@ type IntentStatus =
   | { kind: 'awaiting_payer'; orderId: string | undefined; approveUrl: string | undefined }
   | { kind: 'failed'; message: string };
 
+/** mm:ss (or h:mm:ss) for a non-negative duration in ms. */
+export function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** Live countdown to expires_at so reviewers see the authorization window. */
+const Countdown: React.FC<{ expiresAt: string | null | undefined; testId: string; label?: string }> = ({
+  expiresAt,
+  testId,
+  label = 'Authorization deadline',
+}) => {
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  if (!expiresAt) return null;
+  const deadline = Date.parse(expiresAt);
+  if (Number.isNaN(deadline)) return null;
+
+  const remaining = deadline - now;
+  const expired = remaining <= 0;
+  const tone = expired
+    ? 'bg-rose-950/60 border-rose-800 text-rose-300'
+    : remaining < 60_000
+      ? 'bg-rose-950/50 border-rose-800/70 text-rose-300 animate-pulse'
+      : remaining < 300_000
+        ? 'bg-amber-950/60 border-amber-800/70 text-amber-300'
+        : 'bg-emerald-950/50 border-emerald-800/60 text-emerald-300';
+
+  return (
+    <span
+      data-testid={testId}
+      data-expired={expired ? 'true' : 'false'}
+      className={`inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded border ${tone}`}
+    >
+      <Clock className="w-3 h-3" />
+      {expired ? 'Expired' : `${label}: ${formatCountdown(remaining)}`}
+    </span>
+  );
+};
+
+/** Turn an approve response into an explicit, actionable message (401 / 403 / 422 …). */
+function describeApproveFailure(res: ApproveResponse): string {
+  const code = res.error ?? res.refusal_reason;
+  switch (res.http_status) {
+    case 401:
+      return 'Approval failed (401 UNAUTHORIZED): Owner Key is empty or invalid. Check Owner Key and retry.';
+    case 403:
+      return 'Approval failed (403 FORBIDDEN): This token is not an Owner Key — only owner can approve step-up.';
+    case 422:
+      if (code === 'PAYLOAD_HASH_MISMATCH') {
+        return 'Approval rejected (422 PAYLOAD_HASH_MISMATCH): Approved hash does not match current server payload (FR-28). No funds transferred; reservation released.';
+      }
+      return `Approval rejected (422 ${code ?? 'UNPROCESSABLE'}): ${res.message ?? 'request cannot be processed'}`;
+    default: {
+      const detail = res.message ?? res.refusal_reason ?? res.error ?? `unexpected status: ${res.status}`;
+      const prefix = res.http_status ? `Approval failed (${res.http_status}${code ? ` ${code}` : ''})` : 'Approval failed';
+      return `${prefix}: ${detail}`;
+    }
+  }
+}
+
 export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
   proposals,
+  awaitingPayer = [],
+  notice = null,
   onApproved,
   onRejected,
+  onOwnerKeyChange,
 }) => {
   // Owner authorization token — loaded from sessionStorage on mount; never hardcoded (rule.md §4.9).
   const [ownerToken, setOwnerToken] = useState<string>(readSessionToken);
@@ -67,6 +165,14 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [statusMap, setStatusMap] = useState<Record<string, IntentStatus>>({});
 
+  const setStatus = (intentId: string, status: IntentStatus | undefined) =>
+    setStatusMap((prev) => {
+      const next = { ...prev };
+      if (status) next[intentId] = status;
+      else delete next[intentId];
+      return next;
+    });
+
   const handleApprove = async (proposal: PendingStepUpProposal) => {
     const token = ownerToken.trim();
     if (!token) {
@@ -75,49 +181,120 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
     }
 
     setApprovingId(proposal.intentId);
+    setStatus(proposal.intentId, undefined); // clear a previous failure before retrying
     try {
+      // proposal.payloadHash is the server-provided hash, sent as-is (never computed in the browser).
       const res = await api.approveIntent(proposal.intentId, proposal.payloadHash, token);
 
       if (res.status === 'CAPTURED') {
-        setStatusMap((prev) => ({
-          ...prev,
-          [proposal.intentId]: { kind: 'captured', orderId: res.order_id },
-        }));
+        setStatus(proposal.intentId, { kind: 'captured', orderId: res.order_id });
         if (onApproved) onApproved(proposal.intentId, res);
-
       } else if (res.status === 'AWAITING_PAYER_APPROVAL') {
-        // Order created on PayPal; human must click the sandbox approve URL before capture.
-        setStatusMap((prev) => ({
-          ...prev,
-          [proposal.intentId]: {
-            kind: 'awaiting_payer',
-            orderId: res.order_id,
-            approveUrl: res.approve_url,
-          },
-        }));
-
+        // Order created on PayPal; the buyer must click the sandbox approve URL before capture.
+        setStatus(proposal.intentId, {
+          kind: 'awaiting_payer',
+          orderId: res.order_id,
+          approveUrl: res.approve_url,
+        });
+        if (onApproved) onApproved(proposal.intentId, res);
       } else {
-        // 401 / 403 / 409 / 422 — server returned error fields in message / refusal_reason / error
-        const errMsg =
-          res.message
-          ?? res.refusal_reason
-          ?? res.error
-          ?? `Unexpected status: ${res.status}`;
-        setStatusMap((prev) => ({
-          ...prev,
-          [proposal.intentId]: { kind: 'failed', message: `Approval failed: ${errMsg}` },
-        }));
+        setStatus(proposal.intentId, { kind: 'failed', message: describeApproveFailure(res) });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setStatusMap((prev) => ({
-        ...prev,
-        [proposal.intentId]: { kind: 'failed', message: `Network error: ${msg}` },
-      }));
+      setStatus(proposal.intentId, { kind: 'failed', message: `Network error: ${msg}` });
     } finally {
       setApprovingId(null);
     }
   };
+
+  const handleReject = async (proposal: PendingStepUpProposal) => {
+    const token = ownerToken.trim();
+    if (!token) {
+      setTokenInputVisible(true);
+      return;
+    }
+    setApprovingId(proposal.intentId);
+    try {
+      const res = await api.rejectIntent(proposal.intentId, token);
+      if (res.ok) {
+        if (onRejected) onRejected(proposal.intentId);
+      } else {
+        setStatus(proposal.intentId, {
+          kind: 'failed',
+          message: `Rejection failed (${res.status}): ${res.message ?? 'request rejected by server'}`,
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(proposal.intentId, { kind: 'failed', message: `Network error: ${msg}` });
+    } finally {
+      setApprovingId(null);
+    }
+  };
+
+  /** Banner shown once the owner approved: buyer still has to approve on PayPal Sandbox. */
+  const renderPayerBanner = (item: PendingStepUpProposal, orderId: string | null | undefined, approveUrl: string | null | undefined) => {
+    const isBusy = approvingId === item.intentId;
+    return (
+      <div
+        data-testid={`status-awaiting-${item.intentId}`}
+        className="p-4 rounded-lg border bg-blue-950/60 border-blue-800 text-blue-200 text-xs font-mono space-y-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Hourglass className="w-4 h-4 shrink-0 text-blue-400" />
+            <span className="font-sans font-bold text-sm text-blue-100">
+              Awaiting Buyer Approval on PayPal Sandbox
+            </span>
+          </div>
+          <Countdown
+            expiresAt={item.expiresAt}
+            testId={`countdown-payer-${item.intentId}`}
+            label="Buyer approval deadline"
+          />
+        </div>
+        <p className="text-[11px] text-blue-300/90">
+          Owner approved. Order{' '}
+          <span className="text-blue-200 font-bold">{orderId ?? 'PayPal'}</span> created; funds will only be captured after
+          buyer approves on PayPal Sandbox.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {approveUrl && (
+            <a
+              data-testid={`paypal-approve-link-${item.intentId}`}
+              href={approveUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold transition"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Approve on PayPal Sandbox
+            </a>
+          )}
+          <button
+            data-testid={`recapture-btn-${item.intentId}`}
+            disabled={isBusy}
+            onClick={() => handleApprove(item)}
+            className="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+          >
+            {isBusy ? (
+              <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            )}
+            <span>Check Capture Status</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Results for intents that already left both lists (e.g. captured, or failed and swept by the server).
+  const visibleIds = new Set([...proposals, ...awaitingPayer].map((p) => p.intentId));
+  const orphanResults = Object.entries(statusMap).filter(
+    ([id, st]) => !visibleIds.has(id) && (st.kind === 'captured' || st.kind === 'failed'),
+  );
 
   return (
     <div
@@ -177,7 +354,11 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
             aria-label="Owner Authorization Key"
           />
           <button
-            onClick={() => setTokenInputVisible(false)}
+            data-testid="owner-key-done"
+            onClick={() => {
+              setTokenInputVisible(false);
+              if (onOwnerKeyChange) onOwnerKeyChange(ownerToken.trim());
+            }}
             className="text-[11px] text-slate-400 hover:text-white font-mono px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 transition cursor-pointer"
           >
             Done
@@ -185,15 +366,52 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
         </div>
       )}
 
-      {/* ── Empty state ────────────────────────────────────────────────────── */}
+      {/* ── Results for intents that already left the lists ────────────────── */}
+      {orphanResults.map(([id, st]) =>
+        st.kind === 'captured' ? (
+          <div
+            key={id}
+            data-testid={`status-captured-${id}`}
+            className="p-3 rounded-lg border bg-emerald-950/60 border-emerald-800 text-emerald-300 text-xs font-mono flex items-center gap-2"
+          >
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>
+              {id}: PayPal Order {st.orderId ?? 'unknown'} settled successfully!
+            </span>
+          </div>
+        ) : st.kind === 'failed' ? (
+          <div
+            key={id}
+            data-testid={`status-failed-${id}`}
+            className="p-3 rounded-lg border bg-rose-950/60 border-rose-800 text-rose-300 text-xs font-mono flex items-start gap-2"
+          >
+            <XCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              {id}: {st.message}
+            </span>
+          </div>
+        ) : null,
+      )}
+
+      {/* ── Owner queue ────────────────────────────────────────────────────── */}
       {proposals.length === 0 ? (
-        <div className="py-12 text-center text-slate-500 font-mono text-xs space-y-2">
-          <CheckCircle2 className="w-8 h-8 text-slate-600 mx-auto" />
-          <p>No step-up approvals pending review.</p>
-          <p className="text-[11px] text-slate-600">
-            Intents over $30.00 will pause here for operator sign-off before PayPal is called.
-          </p>
-        </div>
+        notice ? (
+          <div
+            data-testid="queue-notice"
+            className="p-3 rounded-lg border bg-amber-950/40 border-amber-800/60 text-amber-300 text-xs font-mono flex items-center gap-2"
+          >
+            <KeyRound className="w-4 h-4 shrink-0" />
+            <span>{notice}</span>
+          </div>
+        ) : awaitingPayer.length === 0 ? (
+          <div className="py-12 text-center text-slate-500 font-mono text-xs space-y-2">
+            <CheckCircle2 className="w-8 h-8 text-slate-600 mx-auto" />
+            <p>No step-up approvals pending review.</p>
+            <p className="text-[11px] text-slate-600">
+              Intents over $30.00 will pause here for operator sign-off before PayPal is called.
+            </p>
+          </div>
+        ) : null
       ) : (
         <div className="space-y-4 pt-2">
           {proposals.map((item) => {
@@ -215,6 +433,7 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
+                    <Countdown expiresAt={item.expiresAt} testId={`countdown-${item.intentId}`} />
                     <span className="text-xs font-bold font-mono px-2 py-0.5 rounded bg-amber-950/60 border border-amber-800/60 text-amber-300">
                       STEP_UP
                     </span>
@@ -290,61 +509,39 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
                   </div>
                 </div>
 
-                {/* ── Status Panel ─────────────────────────────────────────── */}
+                {/* ── Status Panel (retryable failures stay visible next to the buttons) ── */}
                 {currentStatus?.kind === 'captured' && (
                   <div
                     data-testid={`status-captured-${item.intentId}`}
                     className="p-3 rounded-lg border bg-emerald-950/60 border-emerald-800 text-emerald-300 text-xs font-mono flex items-center gap-2"
                   >
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    <span>
-                      PayPal Order {currentStatus.orderId ?? 'unknown'} settled successfully!
-                    </span>
+                    <span>PayPal Order {currentStatus.orderId ?? 'unknown'} settled successfully!</span>
                   </div>
                 )}
 
-                {currentStatus?.kind === 'awaiting_payer' && (
-                  <div
-                    data-testid={`status-awaiting-${item.intentId}`}
-                    className="p-3 rounded-lg border bg-blue-950/60 border-blue-800 text-blue-200 text-xs font-mono space-y-2"
-                  >
-                    <div className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 shrink-0 text-blue-400" />
-                      <span>
-                        Order <span className="text-blue-300 font-bold">{currentStatus.orderId}</span> created — awaiting payer approval on PayPal.
-                      </span>
-                    </div>
-                    {currentStatus.approveUrl && (
-                      <a
-                        data-testid={`paypal-approve-link-${item.intentId}`}
-                        href={currentStatus.approveUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold transition"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        Approve on PayPal Sandbox
-                      </a>
-                    )}
-                  </div>
-                )}
+                {currentStatus?.kind === 'awaiting_payer' &&
+                  renderPayerBanner(item, currentStatus.orderId, currentStatus.approveUrl)}
 
                 {currentStatus?.kind === 'failed' && (
                   <div
                     data-testid={`status-failed-${item.intentId}`}
-                    className="p-3 rounded-lg border bg-rose-950/60 border-rose-800 text-rose-300 text-xs font-mono flex items-center gap-2"
+                    role="alert"
+                    className="p-3 rounded-lg border bg-rose-950/60 border-rose-800 text-rose-300 text-xs font-mono flex items-start gap-2"
                   >
-                    <XCircle className="w-4 h-4 shrink-0" />
+                    <XCircle className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>{currentStatus.message}</span>
                   </div>
                 )}
 
-                {/* ── Action Buttons (only when no terminal status) ────────── */}
-                {!currentStatus && (
+                {/* ── Action Buttons (hidden once approved / captured; shown again after a failure) ── */}
+                {(!currentStatus || currentStatus.kind === 'failed') && (
                   <div className="flex items-center justify-end gap-3 pt-1">
                     <button
-                      onClick={() => onRejected && onRejected(item.intentId)}
-                      className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 transition cursor-pointer"
+                      data-testid={`reject-btn-${item.intentId}`}
+                      disabled={isApproving}
+                      onClick={() => handleReject(item)}
+                      className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 transition cursor-pointer disabled:opacity-50"
                     >
                       Reject Proposal
                     </button>
@@ -358,39 +555,58 @@ export const StepUpApprovalsQueue: React.FC<StepUpApprovalsQueueProps> = ({
                       {isApproving ? (
                         <>
                           <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                          <span>Verifying & Executing...</span>
+                          <span>Verifying &amp; Executing...</span>
                         </>
                       ) : (
                         <>
                           <ArrowUpRight className="w-4 h-4" />
-                          <span>Approve & Authorize PayPal</span>
+                          <span>Approve &amp; Authorize PayPal</span>
                         </>
                       )}
-                    </button>
-                  </div>
-                )}
-
-                {/* Re-try button after AWAITING_PAYER_APPROVAL (poll for capture) */}
-                {currentStatus?.kind === 'awaiting_payer' && (
-                  <div className="flex justify-end pt-1">
-                    <button
-                      data-testid={`recapture-btn-${item.intentId}`}
-                      disabled={isApproving}
-                      onClick={() => handleApprove(item)}
-                      className="px-4 py-2 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 flex items-center gap-2 transition cursor-pointer disabled:opacity-50"
-                    >
-                      {isApproving ? (
-                        <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      ) : (
-                        <ArrowUpRight className="w-3.5 h-3.5" />
-                      )}
-                      <span>Check Capture Status</span>
                     </button>
                   </div>
                 )}
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* ── Awaiting BUYER approval (owner already approved) — not part of the owner queue ── */}
+      {awaitingPayer.length > 0 && (
+        <div data-testid="awaiting-payer-section" className="space-y-3 pt-2">
+          <span className="text-[11px] uppercase tracking-wider text-slate-500 font-mono font-semibold">
+            Awaiting Buyer ({awaitingPayer.length})
+          </span>
+          {awaitingPayer.map((item) => (
+            <div
+              key={item.intentId}
+              data-testid={`payer-wait-${item.intentId}`}
+              className="bg-slate-950/80 border border-blue-900/60 rounded-xl p-4 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-blue-300">{item.intentId}</span>
+                  <span className="text-slate-600">•</span>
+                  <span className="text-slate-300">{item.merchantRef}</span>
+                </div>
+                <span className="text-sm font-extrabold text-white">
+                  {formatMinorUnits(item.totalMinor, item.currency)}
+                </span>
+              </div>
+              {renderPayerBanner(item, item.orderId, item.approveUrl)}
+              {statusMap[item.intentId]?.kind === 'failed' && (
+                <div
+                  data-testid={`status-failed-${item.intentId}`}
+                  role="alert"
+                  className="p-3 rounded-lg border bg-rose-950/60 border-rose-800 text-rose-300 text-xs font-mono flex items-start gap-2"
+                >
+                  <XCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{(statusMap[item.intentId] as { kind: 'failed'; message: string }).message}</span>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

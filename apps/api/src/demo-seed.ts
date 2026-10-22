@@ -27,6 +27,8 @@ export interface DemoSeedOptions {
   hmacKey?: string;
   now?: Date;
   fetchFn?: typeof fetch;
+  /** mandate.step_up.timeout_seconds for the seeded demo mandate (default 300). */
+  stepUpTimeoutSeconds?: number;
 }
 
 export interface DemoSeedResult {
@@ -82,6 +84,7 @@ export function seedStoresAndMandate(
   db: DatabaseConnection,
   hmacKey: string,
   now: Date,
+  stepUpTimeoutSeconds = 300,
 ): void {
   initMerchantAndCatalogSchema(db);
   initMandateTables(db);
@@ -147,7 +150,7 @@ export function seedStoresAndMandate(
     max_items_per_intent: 5,
     max_pending_approvals: 3,
     suspend_after_denies: 5,
-    step_up: { channel: 'dashboard', timeout_seconds: 300 },
+    step_up: { channel: 'dashboard', timeout_seconds: stepUpTimeoutSeconds },
     risk: { step_up_threshold: 40, deny_threshold: 75 },
     wallet: { type: 'paypal_vault', ref: 'pt_sandbox_shopper_vault_ref' },
     created_at: validFrom,
@@ -193,7 +196,7 @@ export function runDemoReset(options: DemoSeedOptions = {}): DemoResetResult {
 
   const db = openDb(dbPath);
   try {
-    seedStoresAndMandate(db, hmacKey, now);
+    seedStoresAndMandate(db, hmacKey, now, options.stepUpTimeoutSeconds ?? 300);
   } finally {
     db.close();
   }
@@ -214,7 +217,7 @@ export async function runDemoSeed(options: DemoSeedOptions = {}): Promise<DemoSe
   const now = options.now ?? new Date();
 
   // 1. Reset cleanly to base seed
-  runDemoReset({ dbPath, hmacKey, now });
+  runDemoReset({ dbPath, hmacKey, now, ...(options.stepUpTimeoutSeconds !== undefined && { stepUpTimeoutSeconds: options.stepUpTimeoutSeconds }) });
 
   const db = openDb(dbPath);
   try {

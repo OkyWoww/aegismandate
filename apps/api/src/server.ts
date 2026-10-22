@@ -530,6 +530,82 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     return handleApprove(id, request.body?.expected_payload_hash, request, reply);
   });
 
+  // Owner queue statuses: STEP_UP intents holding a reservation, waiting for the OWNER to approve.
+  const OWNER_PENDING_STATUSES = ['APPROVED', 'PENDING_APPROVAL'];
+
+  interface ApprovalRow {
+    intent_id: string;
+    mandate_id: string;
+    merchant_ref: string;
+    status: string;
+    order_id: string | null;
+    payload_hash: string | null;
+    approve_url: string | null;
+    expires_at: string | null;
+    decision_json: string;
+    proposal_json: string | null;
+    created_at: string;
+    updated_at: string;
+  }
+
+  /** Hydrate one executed_intents row into the owner-facing approval view (server truth only). */
+  const toApprovalView = (row: ApprovalRow) => {
+    let proposal: {
+      items?: Array<{ sku: string; qty: number; claimed_unit_price_minor?: number }>;
+      rationale?: string;
+      currency?: string;
+      claimed_total_minor?: number;
+    } = {};
+    let decision: {
+      reason_codes?: string[];
+      risk?: { score?: number };
+      verified_total_minor?: number | null;
+    } = {};
+    try {
+      proposal = row.proposal_json ? JSON.parse(row.proposal_json) : {};
+    } catch {
+      proposal = {};
+    }
+    try {
+      decision = JSON.parse(row.decision_json);
+    } catch {
+      decision = {};
+    }
+
+    // Prices/names come from the merchant catalog (verified), not from agent-claimed values.
+    const items = (proposal.items ?? []).map((it) => {
+      const catalogItem = catalogResolver.getItem(row.merchant_ref, it.sku);
+      return {
+        sku: it.sku,
+        name: catalogItem?.name ?? it.sku,
+        qty: it.qty,
+        unit_price_minor: catalogItem?.priceMinor ?? it.claimed_unit_price_minor ?? 0,
+      };
+    });
+
+    return {
+      intent_id: row.intent_id,
+      mandate_id: row.mandate_id,
+      merchant_ref: row.merchant_ref,
+      status: row.status,
+      items,
+      amount_minor:
+        decision.verified_total_minor ??
+        proposal.claimed_total_minor ??
+        items.reduce((sum, it) => sum + it.unit_price_minor * it.qty, 0),
+      currency: proposal.currency ?? 'USD',
+      payload_hash: row.payload_hash,
+      expires_at: row.expires_at,
+      rationale: proposal.rationale ?? '',
+      reason_codes: decision.reason_codes ?? [],
+      risk_score: decision.risk?.score ?? null,
+      order_id: row.order_id,
+      approve_url: row.approve_url,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  };
+
   app.get('/v1/approvals', async (request, reply) => {
     if (!authenticateOwner(request, reply, { ownerToken: resolvedOwnerToken, agentToken: resolvedAgentToken })) {
       return;
@@ -539,16 +615,21 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
 
     const rows = db
       .prepare(
-        `SELECT intent_id, mandate_id, verdict, status, order_id, payload_hash, refusal_reason, approve_url, expires_at, created_at, updated_at
+        `SELECT intent_id, mandate_id, merchant_ref, status, order_id, payload_hash, approve_url, expires_at, decision_json, proposal_json, created_at, updated_at
          FROM executed_intents
          WHERE verdict = 'STEP_UP' AND status IN ('APPROVED', 'PENDING_APPROVAL', 'AWAITING_PAYER_APPROVAL')
          ORDER BY created_at ASC`,
       )
-      .all();
+      .all() as unknown as ApprovalRow[];
+
+    const approvals = rows.filter((r) => OWNER_PENDING_STATUSES.includes(r.status)).map(toApprovalView);
+    // Already owner-approved: PayPal order exists, the BUYER must approve on PayPal Sandbox.
+    const awaitingPayer = rows.filter((r) => r.status === 'AWAITING_PAYER_APPROVAL').map(toApprovalView);
 
     return {
-      approvals: rows,
-      total: rows.length,
+      approvals,
+      awaiting_payer: awaitingPayer,
+      total: approvals.length,
     };
   });
 

@@ -10,6 +10,7 @@
 
 import 'dotenv/config';
 import { runDemoSeed, type DemoSeedOptions, type DemoSeedResult } from '../apps/api/src/demo-seed.js';
+import { DEMO_STEP_UP_TIMEOUT_SECONDS } from './demo-config.js';
 
 export { runDemoSeed, type DemoSeedOptions, type DemoSeedResult };
 
@@ -18,7 +19,7 @@ async function main() {
   console.log(' AEGIS_MANDATE DEMO ACTIVITY SEED (Task T-018)');
   console.log('='.repeat(70));
 
-  const result = await runDemoSeed();
+  const result = await runDemoSeed({ stepUpTimeoutSeconds: DEMO_STEP_UP_TIMEOUT_SECONDS });
 
   console.log(`[DB] Target database: ${result.dbPath}`);
   console.log(`[Mandate] ${result.mandateId}:`);

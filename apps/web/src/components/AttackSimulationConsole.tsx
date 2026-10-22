@@ -22,7 +22,7 @@ const DEMO_SCENARIOS: ScenarioConfig[] = [
     description: 'Gel Pen 10-Pack. In-mandate price and category. Expected: ALLOW -> Instant PayPal capture.',
     payload: {
       intent_id: 'int_demo_pen_normal',
-      mandate_id: 'mnd_demo_mandate_01',
+      mandate_id: 'mnd_demo_001',
       merchant_ref: 'mrc_demo_store',
       items: [{ sku: 'SKU-PEN-PACK', qty: 1, claimed_unit_price_minor: 900 }],
       claimed_total_minor: 900,
@@ -41,7 +41,7 @@ const DEMO_SCENARIOS: ScenarioConfig[] = [
     description: 'Architect LED Desk Lamp. Exceeds $30.00 auto-approve cap. Expected: STEP_UP -> Queued for operator approval.',
     payload: {
       intent_id: 'int_demo_lamp_stepup',
-      mandate_id: 'mnd_demo_mandate_01',
+      mandate_id: 'mnd_demo_001',
       merchant_ref: 'mrc_demo_store',
       items: [{ sku: 'SKU-DESK-LAMP', qty: 1, claimed_unit_price_minor: 4500 }],
       claimed_total_minor: 4500,
@@ -60,7 +60,7 @@ const DEMO_SCENARIOS: ScenarioConfig[] = [
     description: 'Indirect prompt injection in item description attempting $500 transfer to unauthorized attacker payee. Expected: DENY -> 0 PayPal calls.',
     payload: {
       intent_id: 'int_demo_evil_injection',
-      mandate_id: 'mnd_demo_mandate_01',
+      mandate_id: 'mnd_demo_001',
       merchant_ref: 'mrc_evil_store',
       items: [{ sku: 'SKU-EVIL-GIFT', qty: 1, claimed_unit_price_minor: 50000 }],
       claimed_total_minor: 50000,
@@ -84,7 +84,7 @@ const DEMO_SCENARIOS: ScenarioConfig[] = [
     description: 'Motorized Standing Desk ($320.00). Exceeds $80.00 per-txn cap and $200.00 budget. Expected: DENY (OVER_TXN_LIMIT).',
     payload: {
       intent_id: 'int_demo_standing_desk',
-      mandate_id: 'mnd_demo_mandate_01',
+      mandate_id: 'mnd_demo_001',
       merchant_ref: 'mrc_demo_store',
       items: [{ sku: 'SKU-STAND-DESK', qty: 1, claimed_unit_price_minor: 32000 }],
       claimed_total_minor: 32000,

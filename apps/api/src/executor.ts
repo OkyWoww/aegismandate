@@ -1008,7 +1008,9 @@ export async function executeGoldenPath(
   // --------------------------------------------------------------------------
   const timeoutSeconds = freshMandate.payer_approval_timeout_seconds ?? 900;
   const expiresAt = new Date(new Date(now).getTime() + timeoutSeconds * 1000).toISOString();
-  const approveUrl = orderResponse.links?.find((l) => l.rel === 'approve')?.href;
+  const approveUrl =
+    orderResponse.links?.find((l) => l.rel === 'approve' || l.rel === 'payer-action')?.href ??
+    (orderResponse.id ? `https://www.sandbox.paypal.com/checkoutnow?token=${orderResponse.id}` : undefined);
 
   appendAuditEvent(db, {
     actor: 'control_plane',
@@ -2041,7 +2043,9 @@ export async function executeApprovedStepUp(
         auditValid: vRes.valid,
       };
     }
-    const approveUrl = orderResponse.links?.find((l) => l.rel === 'approve')?.href;
+    const approveUrl =
+      orderResponse.links?.find((l) => l.rel === 'approve' || l.rel === 'payer-action')?.href ??
+      (targetOrderId ? `https://www.sandbox.paypal.com/checkoutnow?token=${targetOrderId}` : undefined);
     const timeoutSeconds = freshMandate.payer_approval_timeout_seconds ?? 900;
     const expiresAt = new Date(new Date(now).getTime() + timeoutSeconds * 1000).toISOString();
 

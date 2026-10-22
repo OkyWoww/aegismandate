@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   ShieldCheck,
   Lock,
@@ -9,11 +9,22 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { MandateOverviewCard } from './components/MandateOverviewCard.js';
-import { StepUpApprovalsQueue, type PendingStepUpProposal } from './components/StepUpApprovalsQueue.js';
+import {
+  StepUpApprovalsQueue,
+  readSessionToken,
+  type PendingStepUpProposal,
+} from './components/StepUpApprovalsQueue.js';
 import { AuditLedgerFeed } from './components/AuditLedgerFeed.js';
 import { AttackSimulationConsole } from './components/AttackSimulationConsole.js';
 import { ImpactHero } from './features/impact/ImpactHero.js';
-import { api, type MandateResponse, type AuditEventItem, type ProposeResponse } from './api/client.js';
+import {
+  api,
+  ApiHttpError,
+  type ApprovalView,
+  type ApproveResponse,
+  type MandateResponse,
+  type AuditEventItem,
+} from './api/client.js';
 
 const DEMO_MANDATE_ID = 'mnd_demo_001';
 
@@ -50,19 +61,32 @@ const INITIAL_MANDATE_DATA: MandateResponse = {
   },
 };
 
-// Step-up proposals are NEVER hardcoded: the queue is hydrated from the backend so every
-// Approve click targets a real intent_id + server-stored payload_hash (FR-18, FR-28).
-// Statuses that still belong in the operator queue (mirrors GET /v1/approvals filter).
-const QUEUED_STEP_UP_STATUSES = new Set(['PENDING_APPROVAL', 'APPROVED', 'AWAITING_PAYER_APPROVAL']);
-
-// Display-only names for demo catalog SKUs (pricing/verification always happens server-side).
-const SKU_DISPLAY_NAMES: Record<string, string> = {
-  'SKU-DESK-LAMP': 'Architect LED Desk Lamp',
-  'SKU-PEN-PACK': 'Gel Pen 10-Pack',
-  'SKU-NOTEBOOK': 'Executive Hardcover Notebook',
-  'SKU-CLEAN-CODE': 'Clean Code: Handbook of Agile Software Craftsmanship',
-  'SKU-STAND-DESK': 'Motorized Adjustable Standing Desk',
-};
+/**
+ * Map a server approval (GET /v1/approvals) to the queue view model.
+ * No client-side derivation: intent_id, items, amount, payload_hash and expires_at are server truth,
+ * so every Approve click targets a real intent and sends the real expected_payload_hash (FR-18, FR-28).
+ */
+function toProposal(a: ApprovalView): PendingStepUpProposal {
+  return {
+    intentId: a.intent_id,
+    merchantRef: a.merchant_ref,
+    items: a.items.map((it) => ({
+      sku: it.sku,
+      name: it.name,
+      qty: it.qty,
+      unitPriceMinor: it.unit_price_minor,
+    })),
+    totalMinor: a.amount_minor,
+    currency: a.currency,
+    rationale: a.rationale,
+    reasonCodes: a.reason_codes,
+    payloadHash: a.payload_hash ?? '',
+    riskScore: a.risk_score ?? undefined,
+    expiresAt: a.expires_at,
+    orderId: a.order_id,
+    approveUrl: a.approve_url,
+  };
+}
 
 // Initial seeded audit events
 const INITIAL_AUDIT_EVENTS: AuditEventItem[] = [
@@ -121,77 +145,39 @@ const INITIAL_AUDIT_EVENTS: AuditEventItem[] = [
 export function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'console' | 'architecture'>('dashboard');
   const [mandateData, setMandateData] = useState<MandateResponse>(INITIAL_MANDATE_DATA);
+  // Owner queue (awaiting the OWNER) and, separately, intents awaiting the BUYER on PayPal Sandbox.
   const [pendingApprovals, setPendingApprovals] = useState<PendingStepUpProposal[]>([]);
+  const [awaitingPayer, setAwaitingPayer] = useState<PendingStepUpProposal[]>([]);
+  const [approvalsNotice, setApprovalsNotice] = useState<string | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEventItem[]>(INITIAL_AUDIT_EVENTS);
   const [isConnected, setIsConnected] = useState<boolean>(false);
 
-  // Latest queue snapshot for the polling callback (avoids stale closures).
-  const pendingApprovalsRef = useRef<PendingStepUpProposal[]>([]);
-  useEffect(() => {
-    pendingApprovalsRef.current = pendingApprovals;
-  }, [pendingApprovals]);
-
-  /**
-   * Rebuild the step-up queue from server truth:
-   * - candidate intent IDs = INTENT_DECIDED events with verdict STEP_UP (+ IDs already queued)
-   * - status / payload_hash / verified total = GET /v1/intents/:id
-   * - line items = INTENT_RECEIVED audit payload
-   */
-  const syncPendingApprovals = useCallback(async (events: AuditEventItem[]) => {
-    const receivedPayloads = new Map<string, Record<string, unknown>>();
-    const candidateIds = new Set<string>();
-    for (const e of events) {
-      if (e.type === 'INTENT_RECEIVED') receivedPayloads.set(e.ref, e.payload);
-      if (e.type === 'INTENT_DECIDED' && e.payload['verdict'] === 'STEP_UP') candidateIds.add(e.ref);
+  /** Load the owner queue from the single source of truth: GET /v1/approvals (owner-authenticated). */
+  const loadApprovals = useCallback(async () => {
+    const token = readSessionToken().trim();
+    if (!token) {
+      setPendingApprovals([]);
+      setAwaitingPayer([]);
+      setApprovalsNotice('Enter Owner Key ("No Owner Key" button) to load the approval queue from server.');
+      return;
     }
-    for (const p of pendingApprovalsRef.current) candidateIds.add(p.intentId);
-    if (candidateIds.size === 0) return;
-
-    const resolved = await Promise.all(
-      [...candidateIds].map(async (intentId): Promise<PendingStepUpProposal | null> => {
-        const existing = pendingApprovalsRef.current.find((p) => p.intentId === intentId);
-        try {
-          const intent = await api.getIntent(intentId);
-          if (intent.verdict !== 'STEP_UP' || !QUEUED_STEP_UP_STATUSES.has(intent.status)) return null;
-
-          const decision = intent.decision;
-          const serverHash = intent.payload_hash ?? '';
-          if (existing) return { ...existing, payloadHash: serverHash || existing.payloadHash };
-
-          const received = receivedPayloads.get(intentId) ?? {};
-          const rawItems = Array.isArray(received['items'])
-            ? (received['items'] as Array<{ sku: string; qty: number; claimed_unit_price_minor: number }>)
-            : [];
-          const items = rawItems.map((it) => ({
-            sku: it.sku,
-            name: SKU_DISPLAY_NAMES[it.sku] ?? it.sku,
-            qty: it.qty,
-            unitPriceMinor: it.claimed_unit_price_minor,
-          }));
-
-          return {
-            intentId: intent.intent_id,
-            merchantRef: String(received['merchant_ref'] ?? 'unknown_merchant'),
-            items,
-            totalMinor:
-              decision?.verified_total_minor ??
-              Number(received['claimed_total_minor'] ?? items.reduce((s, it) => s + it.unitPriceMinor * it.qty, 0)),
-            currency: String(received['currency'] ?? 'USD'),
-            rationale: '',
-            reasonCodes: decision?.reason_codes ?? [],
-            payloadHash: serverHash,
-            riskScore: decision?.risk?.score,
-          };
-        } catch {
-          // Backend unreachable for this intent — keep what we already show, never invent data.
-          return existing ?? null;
-        }
-      }),
-    );
-
-    const fresh = resolved.filter((p): p is PendingStepUpProposal => p !== null);
-    // Preserve proposals added while this sync was in flight (e.g. from the attack console).
-    setPendingApprovals((prev) => [...fresh, ...prev.filter((p) => !candidateIds.has(p.intentId))]);
+    try {
+      const res = await api.getApprovals(token);
+      setPendingApprovals(res.approvals.map(toProposal));
+      setAwaitingPayer(res.awaiting_payer.map(toProposal));
+      setApprovalsNotice(null);
+    } catch (err) {
+      if (err instanceof ApiHttpError && (err.status === 401 || err.status === 403)) {
+        setPendingApprovals([]);
+        setAwaitingPayer([]);
+        setApprovalsNotice(
+          `Owner Key rejected by server (${err.status}). Verify your Owner Key and click Done to reload queue.`,
+        );
+      } else {
+        // Server unreachable: never invent data; keep the last known server state.
+        setApprovalsNotice('Server unreachable — could not load approval queue.');
+      }
+    }
   }, []);
 
   // Poll real backend if available
@@ -208,12 +194,13 @@ export function App() {
       const auditRes = await api.getAuditEvents({ limit: 50 });
       if (auditRes.events && auditRes.events.length > 0) {
         setAuditEvents(auditRes.events);
-        await syncPendingApprovals(auditRes.events);
       }
     } catch {
       // Fallback
     }
-  }, [syncPendingApprovals]);
+
+    await loadApprovals();
+  }, [loadApprovals]);
 
   useEffect(() => {
     loadBackendData();
@@ -221,46 +208,37 @@ export function App() {
     return () => clearInterval(interval);
   }, [loadBackendData]);
 
-  // Handle successful human approval
-  const handleApprovalExecuted = (intentId: string) => {
+  // Handle successful human approval (CAPTURED or AWAITING_PAYER_APPROVAL)
+  const handleApprovalExecuted = (intentId: string, result?: ApproveResponse) => {
+    const approved =
+      pendingApprovals.find((p) => p.intentId === intentId) ?? awaitingPayer.find((p) => p.intentId === intentId);
+
     setPendingApprovals((prev) => prev.filter((p) => p.intentId !== intentId));
-    loadBackendData();
+    if (result?.status === 'AWAITING_PAYER_APPROVAL' && approved) {
+      // Show the buyer-wait banner immediately; the reload below replaces it with server truth.
+      setAwaitingPayer((prev) => [
+        {
+          ...approved,
+          orderId: result.order_id ?? approved.orderId,
+          approveUrl: result.approve_url ?? approved.approveUrl,
+        },
+        ...prev.filter((p) => p.intentId !== intentId),
+      ]);
+    } else {
+      setAwaitingPayer((prev) => prev.filter((p) => p.intentId !== intentId));
+    }
+    void loadBackendData();
   };
 
-  // Handle simulation execution
-  // Fetch payload_hash from server — never compute it in the browser (FR-28).
-  const handleScenarioExecuted = async (res: ProposeResponse, sc: { amountMinor: number; payload: Record<string, unknown> }) => {
-    loadBackendData();
-    if (res.verdict === 'STEP_UP') {
-      // Fetch the server-stored payload_hash for this intent (FR-28: must come from server, not browser)
-      let payloadHash = '';
-      try {
-        const intentDetail = await api.getIntent(res.intent_id);
-        payloadHash = intentDetail.payload_hash ?? '';
-      } catch {
-        // If fetch fails, leave hash empty — approve call will return 422 PAYLOAD_HASH_REQUIRED
-        // which is surfaced in the UI via StepUpApprovalsQueue's statusMap.
-      }
+  const handleApprovalRejected = (intentId: string) => {
+    setPendingApprovals((prev) => prev.filter((p) => p.intentId !== intentId));
+    void loadBackendData();
+  };
 
-      const newProposal: PendingStepUpProposal = {
-        intentId: res.intent_id,
-        merchantRef: String(sc.payload['merchant_ref'] ?? 'mrc_demo_store'),
-        items: (sc.payload['items'] as Array<{ sku: string; name?: string; qty: number; claimed_unit_price_minor: number }>).map((it) => ({
-          sku: it.sku,
-          name: SKU_DISPLAY_NAMES[it.sku] ?? it.sku,
-          qty: it.qty,
-          unitPriceMinor: it.claimed_unit_price_minor,
-        })),
-        totalMinor: sc.amountMinor,
-        currency: 'USD',
-        rationale: String(sc.payload['rationale'] ?? ''),
-        reasonCodes: res.decision?.reason_codes ?? ['OVER_AUTO_LIMIT'],
-        payloadHash,
-        riskScore: res.decision?.risk?.score,
-      };
-
-      setPendingApprovals((prev) => [newProposal, ...prev.filter((p) => p.intentId !== res.intent_id)]);
-    }
+  // After a simulated proposal, refresh from the server: a STEP_UP intent shows up via GET /v1/approvals
+  // with its real payload_hash and expires_at (FR-28: never computed in the browser).
+  const handleScenarioExecuted = async () => {
+    await loadBackendData();
   };
 
   return (
@@ -282,16 +260,14 @@ export function App() {
 
           <div className="flex items-center gap-3 text-xs font-mono">
             <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${
-                isConnected
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${isConnected
                   ? 'bg-emerald-950/60 border-emerald-800 text-emerald-400'
                   : 'bg-slate-900 border-slate-800 text-slate-400'
-              }`}
+                }`}
             >
               <span
-                className={`w-2 h-2 rounded-full ${
-                  isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
-                }`}
+                className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
+                  }`}
               ></span>
               <span>{isConnected ? 'API Connected (:8787)' : 'Local Offline Mode'}</span>
             </div>
@@ -350,11 +326,10 @@ export function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                className={`py-3 flex items-center gap-2 border-b-2 transition cursor-pointer ${
-                  active
+                className={`py-3 flex items-center gap-2 border-b-2 transition cursor-pointer ${active
                     ? 'border-blue-500 text-blue-400 font-semibold'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
-                }`}
+                  }`}
               >
                 <Icon className="w-4 h-4" />
                 <span>{tab.label}</span>
@@ -377,8 +352,11 @@ export function App() {
             {/* 2. Pending Step-Up Approvals Queue */}
             <StepUpApprovalsQueue
               proposals={pendingApprovals}
+              awaitingPayer={awaitingPayer}
+              notice={approvalsNotice}
               onApproved={handleApprovalExecuted}
-              onRejected={(id) => setPendingApprovals((prev) => prev.filter((p) => p.intentId !== id))}
+              onRejected={handleApprovalRejected}
+              onOwnerKeyChange={loadApprovals}
             />
 
             {/* 3. Real-time Audit Ledger Feed */}
@@ -391,11 +369,14 @@ export function App() {
             <AttackSimulationConsole onScenarioExecuted={handleScenarioExecuted} />
 
             {/* Step-Up Approvals Queue also accessible in console tab if items are queued */}
-            {pendingApprovals.length > 0 && (
+            {(pendingApprovals.length > 0 || awaitingPayer.length > 0) && (
               <StepUpApprovalsQueue
                 proposals={pendingApprovals}
+                awaitingPayer={awaitingPayer}
+                notice={approvalsNotice}
                 onApproved={handleApprovalExecuted}
-                onRejected={(id) => setPendingApprovals((prev) => prev.filter((p) => p.intentId !== id))}
+                onRejected={handleApprovalRejected}
+                onOwnerKeyChange={loadApprovals}
               />
             )}
           </div>

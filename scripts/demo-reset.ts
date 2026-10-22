@@ -7,6 +7,7 @@
 
 import 'dotenv/config';
 import { runDemoReset, type DemoSeedOptions } from '../apps/api/src/demo-seed.js';
+import { DEMO_STEP_UP_TIMEOUT_SECONDS } from './demo-config.js';
 
 export { runDemoReset, type DemoSeedOptions };
 
@@ -15,7 +16,7 @@ async function main() {
   console.log(' AEGIS_MANDATE DEMO DATABASE RESET (Task T-018)');
   console.log('='.repeat(70));
 
-  const result = runDemoReset();
+  const result = runDemoReset({ stepUpTimeoutSeconds: DEMO_STEP_UP_TIMEOUT_SECONDS });
 
   console.log(`[DB] Target database reset: ${result.dbPath}`);
   console.log(`[Mandate] Seeded active Demo Mandate (${result.mandateId})`);

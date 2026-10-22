@@ -64,6 +64,55 @@ export interface ApproveResponse {
   message?: string | undefined;
   error?: string | undefined;
   refusal_reason?: string | undefined;
+  /** HTTP status code of the response (added client-side) */
+  http_status?: number | undefined;
+}
+
+/** One STEP_UP intent as returned by GET /v1/approvals (server truth, catalog-verified). */
+export interface ApprovalView {
+  intent_id: string;
+  mandate_id: string;
+  merchant_ref: string;
+  status: string;
+  items: Array<{ sku: string; name: string; qty: number; unit_price_minor: number }>;
+  amount_minor: number;
+  currency: string;
+  payload_hash: string | null;
+  expires_at: string | null;
+  rationale: string;
+  reason_codes: string[];
+  risk_score: number | null;
+  order_id: string | null;
+  approve_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApprovalsResponse {
+  /** Awaiting the OWNER's decision. */
+  approvals: ApprovalView[];
+  /** Owner already approved; the BUYER must approve on PayPal Sandbox (has approve_url). */
+  awaiting_payer: ApprovalView[];
+  total: number;
+}
+
+/** Error carrying the HTTP status so callers can distinguish 401 / 403. */
+export class ApiHttpError extends Error {
+  public readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiHttpError';
+    this.status = status;
+  }
+}
+
+/** Parse a JSON body defensively (proxy/HTML error pages must not crash the UI). */
+async function readJsonBody<T>(res: Response): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return {} as T;
+  }
 }
 
 export interface AuditEventItem {
@@ -160,16 +209,43 @@ export class ApiClient {
     expectedPayloadHash: string,
     ownerToken: string,
   ): Promise<ApproveResponse> {
-    const res = await fetch(`${this.baseUrl}/v1/intents/${id}/approve`, {
+    const res = await fetch(`${this.baseUrl}/v1/intents/${encodeURIComponent(id)}/approve`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${ownerToken}`,
       },
+      // expected_payload_hash is forwarded verbatim from the server-provided approval (FR-28).
       body: JSON.stringify({ expected_payload_hash: expectedPayloadHash }),
     });
     // Return parsed body regardless of HTTP status so callers can inspect error fields.
-    return res.json() as Promise<ApproveResponse>;
+    const body = await readJsonBody<ApproveResponse>(res);
+    return { ...body, http_status: res.status };
+  }
+
+  public async rejectIntent(id: string, ownerToken: string): Promise<{ ok: boolean; status: number; message?: string }> {
+    const res = await fetch(`${this.baseUrl}/v1/intents/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ownerToken}`,
+      },
+      body: '{}',
+    });
+    const body = await readJsonBody<{ message?: string }>(res);
+    return { ok: res.ok, status: res.status, ...(body.message !== undefined && { message: body.message }) };
+  }
+
+  /** Single source of truth for the owner queue (owner-authenticated). */
+  public async getApprovals(ownerToken: string): Promise<ApprovalsResponse> {
+    const res = await fetch(`${this.baseUrl}/v1/approvals`, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    if (!res.ok) {
+      const body = await readJsonBody<{ message?: string }>(res);
+      throw new ApiHttpError(res.status, body.message ?? `Failed to fetch approvals (${res.status})`);
+    }
+    return readJsonBody<ApprovalsResponse>(res);
   }
 
   public async getAuditEvents(params: { limit?: number; offset?: number; actor?: string; type?: string } = {}): Promise<AuditEventsResponse> {

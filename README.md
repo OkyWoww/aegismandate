@@ -28,13 +28,16 @@ An agent that holds payment credentials obeys, and the money is gone. This is **
 
 ## 2. What you see in the demo
 
+Live Interactive Deployment: **[https://aegismandate-production.up.railway.app](https://aegismandate-production.up.railway.app)**
+
 | # | Scene | What happens |
 |---|-------|--------------|
-| 1 | **Mandate** | Dina grants the agent a budget ($200), a merchant allowlist, per-transaction limit, and an expiry. The agent never receives payment credentials. |
-| 2 | **Normal purchase** | Agent proposes a $9 pen pack. Policy says ALLOW, the server creates a PayPal order, Dina approves on PayPal, the server verifies and captures. |
-| 3 | **Attack** | The agent reads the malicious page and proposes a $500 payment to an attacker. Policy says DENY with reason codes. No PayPal order exists. |
-| 4 | **Step-up** | A $45 lamp is above the auto-approve limit. No approve link exists until the owner confirms that exact payload hash. Change one field and execution is refused. |
-| 5 | **Audit** | Every step is in a hash-chained log. Tamper with one row and verification turns red. |
+| 1 | **Mandate** | Dina grants the agent a budget ($200), a merchant allowlist, per-transaction limit ($80), and auto-approve threshold ($30). The agent never receives payment credentials. |
+| 2 | **Normal purchase** | Agent proposes a $9 pen pack. Under $30 auto-approve cap, policy immediately returns **ALLOW**, server creates PayPal order autonomously without human intervention. |
+| 3 | **Attack** | The agent reads the malicious page and proposes a $500 payment to an attacker. Policy returns **DENY** with reason codes. Zero PayPal API calls made. |
+| 4 | **Step-up** | A $45 lamp exceeds the $30 auto-approve limit (**STEP_UP**). Queued in **Step-Up Approvals Queue**. Owner enters their key, reviews verified items, and approves/rejects with cryptographic payload hash binding. |
+| 5 | **Reset Demo** | Evaluators/judges can click the **Reset Demo** button anytime to instantly restore a clean $200.00 budget and wipe test orders for fresh evaluation. |
+| 6 | **Audit** | Every step is appended to a SHA-256 hash-chained log. Click **Verify Ledger Integrity** to verify cryptographic chain validity (**PASS**). |
 
 ## 3. How it works
 
@@ -125,7 +128,7 @@ The injection scanner is **advisory only**. Several scenarios are blocked by str
 - Merchants are our own demo stores, including the "Evil Store".
 - Sandbox only. No real money, no production credentials.
 - Webhook signature verification against PayPal is **not verified live**. Tests use a mock verifier. Order state is reconciled by polling `GET order`.
-- There is no hosted demo. Run it locally (below).
+- Hosted demo is deployed and live on Railway: [https://aegismandate-production.up.railway.app](https://aegismandate-production.up.railway.app)
 - `pnpm smoke` runs in `MODE: MOCK` without sandbox credentials and prints that label. Mock runs are never used as PayPal evidence.
 
 **We do not claim:**
@@ -133,7 +136,46 @@ The injection scanner is **advisory only**. Several scenarios are blocked by str
 - That prompt injection detection is solved. Safety comes from what the agent *cannot do*, not from detecting every trick.
 - That every unwanted purchase is prevented. A hijacked agent can still propose an allowed item from an allowed merchant within budget. That damage is bounded by the mandate, and the payer still has to approve.
 
-## 7. Quickstart
+## 7. Evaluator & Judge Walkthrough (Live Demo Testing)
+
+A hosted production deployment is live at:  
+👉 **[https://aegismandate-production.up.railway.app](https://aegismandate-production.up.railway.app)**
+
+Judges and evaluators can interactively test the full lifecycle of the policy containment plane directly in their browser:
+
+### Step 1: Clean State with "Reset Demo" 🔄
+At any point during evaluation, click the **`Reset Demo`** button (located in the top-right of the *Attack Simulation & Live Console* panel next to *Demo Scenarios 1–4*).
+- **What it does:** Instantly wipes all executed simulation intents, clears held reservations, empties the human approval queue, and restores the active demo mandate (`mnd_demo_001`) with its full **$200.00** budget.
+- **Alternative:** Evaluators can also call the REST API directly:
+  ```bash
+  curl -X POST https://aegismandate-production.up.railway.app/v1/demo/reset
+  ```
+
+### Step 2: Test Autonomous In-Mandate Execution (Scenario 1)
+- Select **`SCENARIO-1: Normal In-Mandate Purchase ($9.00)`** and click **`Submit Intent Proposal`**.
+- **Expected Result:** **`Verdict: ALLOW`** with status `AWAITING_PAYER_APPROVAL` and real PayPal Order ID.
+- **Why:** The $9.00 item is below the $30.00 auto-approve threshold. The agent executes autonomously without requiring owner sign-off.
+
+### Step 3: Test Human-in-the-Loop Gate (Scenario 2)
+- Select **`SCENARIO-2: Over-Limit Step-Up Purchase ($45.00)`** and click **`Submit Intent Proposal`**.
+- **Expected Result:** **`Verdict: STEP_UP`** with reason code `OVER_AUTO_LIMIT`.
+- Notice the **Step-Up Approvals Queue** at the top. The purchase is safely quarantined.
+- Click the **`No Owner Key`** button and enter the demo owner token to authenticate (or use your own 32-character key).
+- The item appears in the queue with item-level verification. Click **`Approve & Authorize PayPal`** to issue the PayPal order, or **`Reject`** to refund the reservation back to the budget.
+
+### Step 4: Test Adversarial Attack Containment (Scenario 3 & 4)
+- Select **`SCENARIO-3: Evil Store Prompt Injection ($500.00)`** and submit.
+- **Expected Result:** **`Verdict: DENY`**. The indirect prompt injection and unauthorized store are blocked at the gateway. **0 PayPal API calls are made.**
+- Select **`SCENARIO-4: Direct Denial Standing Desk ($320.00)`** and submit.
+- **Expected Result:** **`Verdict: DENY`**. Bounded by `OVER_TXN_LIMIT` ($80 cap) and budget limit.
+
+### Step 5: Verify Cryptographic Audit Ledger
+- Scroll to the **Cryptographic Audit Ledger** panel and click **`Verify Ledger Integrity`**.
+- **Expected Result:** **`Cryptographic Chain Valid (PASS)`**. All events are chained via SHA-256 hashes (`H_i = SHA-256(H_{i-1} || payload_i)`).
+
+---
+
+## 8. Quickstart (Running Locally)
 
 **Requirements:** Node.js `>= 22.13.0` (uses built-in `node:sqlite`), `pnpm`.
 
@@ -168,7 +210,7 @@ Sandbox buyer credentials for judges are provided in the Devpost testing instruc
 
 Full verification: `pnpm typecheck && pnpm lint && pnpm test && pnpm test:concurrency`.
 
-## 8. Key security invariants
+## 9. Key security invariants
 
 | ID | Guarantee | Verified by |
 |----|-----------|-------------|
@@ -185,7 +227,7 @@ Full verification: `pnpm typecheck && pnpm lint && pnpm test && pnpm test:concur
 
 The full matrix (INV-1 to INV-14) is in [`docs/specs/rule.md`](docs/specs/rule.md).
 
-## 9. For technical reviewers
+## 10. For technical reviewers
 
 The project was built spec-first. Start here if you want the details:
 
@@ -198,6 +240,6 @@ The project was built spec-first. Start here if you want the details:
 
 Repository layout: `apps/api` (control plane), `apps/agent` (untrusted agent), `apps/stores` (demo and evil store), `apps/web` (dashboard), `packages/{policy,audit,paypal,scanner,schemas,sim}`, `scripts/`.
 
-## 10. License
+## 11. License
 
 MIT. See [`LICENSE`](LICENSE).

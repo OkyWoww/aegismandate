@@ -55,7 +55,7 @@ export interface StartServerOptions {
  * Boots the Fastify HTTP Control Plane server with database and PayPal dependencies.
  */
 export async function startServer(options: StartServerOptions = {}) {
-  const port = options.port ?? Number(process.env['PORT'] || 3001);
+  const port = options.port ?? (Number(process.env['PORT']) || 8787);
   const host = options.host ?? (process.env['HOST'] || '0.0.0.0');
   const dbPath = options.dbPath ?? (process.env['DB_PATH'] || './data/mandatepay.db');
   const hmacKey = options.hmacKey ?? (process.env['MANDATE_HMAC_KEY'] || 'default_mandate_hmac_secret_key_32chars!');

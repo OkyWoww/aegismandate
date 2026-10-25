@@ -1,6 +1,10 @@
 import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
 import {
   type DatabaseConnection,
   appendAuditEvent,
@@ -148,8 +152,9 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   });
 
   await app.register(cors, {
-    origin: '*',
+    origin: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-owner-token'],
   });
 
   // Global uniform error handling
@@ -1084,6 +1089,38 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       id: eventId,
     });
   });
+
+  // --------------------------------------------------------------------------
+  // Static File Serving & SPA Fallback (Unified Full-Stack Deployment)
+  // --------------------------------------------------------------------------
+  const currentFilePath = fileURLToPath(import.meta.url);
+  const currentDirPath = path.dirname(currentFilePath);
+  const candidateDistPaths = [
+    path.resolve(process.cwd(), 'dist'),
+    path.resolve(currentDirPath, '../../../dist'),
+    path.resolve(currentDirPath, '../../../../dist'),
+  ];
+  const distDir = candidateDistPaths.find((p) => fs.existsSync(path.join(p, 'index.html')));
+
+  if (distDir) {
+    await app.register(fastifyStatic, {
+      root: distDir,
+      prefix: '/',
+      wildcard: false,
+    });
+
+    app.setNotFoundHandler((request, reply) => {
+      // API routes return structured 404 JSON, not HTML
+      if (request.raw.url && (request.raw.url.startsWith('/v1') || request.raw.url.startsWith('/health'))) {
+        return reply.code(404).send({
+          error: 'NotFound',
+          message: `Route ${request.method}:${request.raw.url} not found`,
+          statusCode: 404,
+        });
+      }
+      return reply.sendFile('index.html');
+    });
+  }
 
   return app;
 }

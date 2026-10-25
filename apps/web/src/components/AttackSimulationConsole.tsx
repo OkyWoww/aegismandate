@@ -128,14 +128,24 @@ export const AttackSimulationConsole: React.FC<AttackSimulationConsoleProps> = (
 
     try {
       const res = await api.proposeIntent(uniquePayload);
-      setExecutionResult(res);
-      if (onScenarioExecuted) onScenarioExecuted(res, scenario);
-    } catch {
+      if ((res as unknown as { error?: string }).error || !res.verdict) {
+        const errObj = res as unknown as { error?: string; message?: string };
+        setExecutionResult({
+          verdict: 'DENY',
+          intent_id: String(uniquePayload.intent_id),
+          status: 'FAILED',
+          refusal_reason: errObj.message || errObj.error || 'Server returned an invalid response',
+        });
+      } else {
+        setExecutionResult(res);
+        if (onScenarioExecuted) onScenarioExecuted(res, scenario);
+      }
+    } catch (err) {
       setExecutionResult({
         verdict: 'DENY',
         intent_id: String(uniquePayload.intent_id),
         status: 'FAILED',
-        refusal_reason: 'NETWORK_ERROR',
+        refusal_reason: err instanceof Error ? err.message : 'NETWORK_ERROR',
       });
     } finally {
       setRunning(false);

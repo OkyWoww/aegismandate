@@ -25,6 +25,7 @@ import {
   initExecutorTables,
   type StoreCatalogResolver,
 } from './executor.js';
+import { seedStoresAndMandate } from './demo-seed.js';
 
 export interface ServerOptions {
   db: DatabaseConnection;
@@ -177,6 +178,30 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
       status: 'OK',
       timestamp: getNow(),
     };
+  });
+
+  // --------------------------------------------------------------------------
+  // Demo Reset Endpoint for Evaluators & Judges
+  // --------------------------------------------------------------------------
+  app.post('/v1/demo/reset', async (_request, reply) => {
+    try {
+      db.prepare('DELETE FROM executed_intents WHERE mandate_id = ?').run('mnd_demo_001');
+      db.prepare("DELETE FROM orders WHERE intent_id LIKE 'int_demo_%'").run();
+      db.prepare('DELETE FROM reservations WHERE mandate_id = ?').run('mnd_demo_001');
+      db.prepare('DELETE FROM mandate_spend WHERE mandate_id = ?').run('mnd_demo_001');
+      db.prepare('DELETE FROM mandates WHERE id = ?').run('mnd_demo_001');
+
+      seedStoresAndMandate(db, hmacKey, new Date());
+      return reply.code(200).send({
+        ok: true,
+        message: 'Simulation state successfully reset to initial pristine state',
+      });
+    } catch (err) {
+      return reply.code(500).send({
+        error: 'RESET_FAILED',
+        message: err instanceof Error ? err.message : 'Failed to reset demo state',
+      });
+    }
   });
 
   // --------------------------------------------------------------------------

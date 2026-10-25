@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Terminal, Play, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
+import { Terminal, Play, CheckCircle2, AlertTriangle, XCircle, RotateCcw } from 'lucide-react';
 import { api, type ProposeResponse } from '../api/client.js';
 import { useImpactSummary } from '../features/impact/useImpactSummary.js';
 
@@ -113,7 +113,23 @@ export const AttackSimulationConsole: React.FC<AttackSimulationConsoleProps> = (
 
   const [selectedScenario, setSelectedScenario] = useState<ScenarioConfig>(DEMO_SCENARIOS[0]!);
   const [running, setRunning] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [executionResult, setExecutionResult] = useState<ProposeResponse | null>(null);
+
+  const handleResetDemo = async () => {
+    if (!window.confirm('Reset demo simulation database? All simulated transactions will be cleared and the demo mandate will be restored with full $200.00 budget.')) {
+      return;
+    }
+    setResetting(true);
+    try {
+      await api.resetDemo();
+      setExecutionResult(null);
+      window.location.reload();
+    } catch (err) {
+      alert(`Reset failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setResetting(false);
+    }
+  };
 
   const handleRun = async (scenario: ScenarioConfig) => {
     setRunning(true);
@@ -194,6 +210,15 @@ export const AttackSimulationConsole: React.FC<AttackSimulationConsoleProps> = (
           <span className="text-xs font-mono px-2.5 py-1 rounded bg-blue-950 text-blue-300 border border-blue-800">
             Demo Scenarios 1–4
           </span>
+          <button
+            onClick={handleResetDemo}
+            disabled={resetting}
+            title="Reset demo mandate, budgets, and simulated transactions"
+            className="text-xs font-mono px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+          >
+            <RotateCcw className={`w-3 h-3 ${resetting ? 'animate-spin' : ''}`} />
+            <span>{resetting ? 'Resetting...' : 'Reset Demo'}</span>
+          </button>
         </div>
       </div>
 

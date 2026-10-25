@@ -198,6 +198,15 @@ export class ApiClient {
     return res.json() as Promise<ProposeResponse>;
   }
 
+  public async resetDemo(): Promise<{ ok: boolean; message: string }> {
+    const res = await fetch(`${this.baseUrl}/v1/demo/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`Reset failed with status ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; message: string }>;
+  }
+
   public async getIntent(id: string): Promise<IntentDetail> {
     const res = await fetch(`${this.baseUrl}/v1/intents/${id}`);
     if (!res.ok) throw new Error(`Failed to fetch intent ${id} (${res.status})`);

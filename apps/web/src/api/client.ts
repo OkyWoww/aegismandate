@@ -202,6 +202,7 @@ export class ApiClient {
     const res = await fetch(`${this.baseUrl}/v1/demo/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: '{}',
     });
     if (!res.ok) throw new Error(`Reset failed with status ${res.status}`);
     return res.json() as Promise<{ ok: boolean; message: string }>;

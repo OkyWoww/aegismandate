@@ -183,7 +183,7 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   // --------------------------------------------------------------------------
   // Demo Reset Endpoint for Evaluators & Judges
   // --------------------------------------------------------------------------
-  app.post('/v1/demo/reset', async (_request, reply) => {
+  const handleDemoReset = async (_request: FastifyRequest, reply: FastifyReply) => {
     try {
       db.prepare('DELETE FROM executed_intents WHERE mandate_id = ?').run('mnd_demo_001');
       db.prepare("DELETE FROM orders WHERE intent_id LIKE 'int_demo_%'").run();
@@ -202,7 +202,9 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         message: err instanceof Error ? err.message : 'Failed to reset demo state',
       });
     }
-  });
+  };
+  app.post('/v1/demo/reset', handleDemoReset);
+  app.get('/v1/demo/reset', handleDemoReset);
 
   // --------------------------------------------------------------------------
   // Purchase Intent Proposal (FR-7, FR-8, FR-10, FR-11, FR-26)

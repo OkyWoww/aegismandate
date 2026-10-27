@@ -519,7 +519,7 @@ export function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500 font-mono flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span>MandatePay</span>
+          <span>AegisMandate</span>
           <span>•</span>
           <span>PayPal AI Hackathon Submission</span>
         </div>

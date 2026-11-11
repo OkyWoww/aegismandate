@@ -284,7 +284,7 @@ describe('Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11', 
           const child = spawn(
             process.execPath,
             [tsxCliPath, workerScriptPath, concurrencyDbPath, String(workerId), String(txPerWorker)],
-            { stdio: 'ignore' },
+            { stdio: ['ignore', 'inherit', 'inherit'] },
           );
 
           child.on('close', (code) => {
@@ -307,7 +307,7 @@ describe('Audit Ledger Package (packages/audit) — FR-21, FR-22, AC-5, AC-11', 
       const rows = getAuditEvents(verifyDb, { limit: 300 });
       expect(rows).toHaveLength(totalEvents);
 
-      // Verify unbroken sequence 1..200 with zero duplicates or gaps
+      // Verify unbroken sequence 1..200 with zero gaps or duplicates
       const seqSet = new Set<number>();
       for (const r of rows) {
         seqSet.add(r.seq);

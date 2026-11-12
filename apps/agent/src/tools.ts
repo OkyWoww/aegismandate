@@ -21,12 +21,12 @@ export interface CatalogService {
 export interface ControlPlaneClient {
   submitProposal(proposal: PurchaseIntentProposal): Promise<{
     verdict: string;
-    reason_codes?: string[];
+    reason_codes?: string[] | undefined;
     intent_id: string;
   }>;
   checkStatus(intentId: string): Promise<{
     status: string;
-    verdict?: string;
+    verdict?: string | undefined;
   }>;
 }
 

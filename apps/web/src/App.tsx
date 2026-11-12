@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   RefreshCw,
   ExternalLink,
+  Bot,
 } from 'lucide-react';
 import { MandateOverviewCard } from './components/MandateOverviewCard.js';
 import {
@@ -16,6 +17,7 @@ import {
 } from './components/StepUpApprovalsQueue.js';
 import { AuditLedgerFeed } from './components/AuditLedgerFeed.js';
 import { AttackSimulationConsole } from './components/AttackSimulationConsole.js';
+import { LiveGeminiAgentPanel } from './components/LiveGeminiAgentPanel.js';
 import { ImpactHero } from './features/impact/ImpactHero.js';
 import {
   api,
@@ -143,7 +145,7 @@ const INITIAL_AUDIT_EVENTS: AuditEventItem[] = [
 ];
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'console' | 'architecture'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'agent' | 'console' | 'architecture'>('dashboard');
   const [mandateData, setMandateData] = useState<MandateResponse>(INITIAL_MANDATE_DATA);
   // Owner queue (awaiting the OWNER) and, separately, intents awaiting the BUYER on PayPal Sandbox.
   const [pendingApprovals, setPendingApprovals] = useState<PendingStepUpProposal[]>([]);
@@ -317,6 +319,7 @@ export function App() {
         <div className="max-w-7xl mx-auto flex gap-6 text-sm font-medium">
           {[
             { id: 'dashboard', label: 'Mandate & Approvals Overview', icon: Layers },
+            { id: 'agent', label: 'Live Gemini Shopper Agent', icon: Bot, isSpecial: true },
             { id: 'console', label: 'Live Attack Simulation Console', icon: Terminal },
             { id: 'architecture', label: 'Security Model & Boundary Invariants', icon: ShieldCheck },
           ].map((tab) => {
@@ -326,13 +329,19 @@ export function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                className={`py-3 flex items-center gap-2 border-b-2 transition cursor-pointer ${active
-                    ? 'border-blue-500 text-blue-400 font-semibold'
+                className={`py-3 flex items-center gap-2 border-b-2 transition cursor-pointer ${
+                  active
+                    ? 'border-indigo-500 text-indigo-400 font-semibold'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
-                  }`}
+                }`}
               >
                 <Icon className="w-4 h-4" />
                 <span>{tab.label}</span>
+                {tab.isSpecial && (
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    Live LLM
+                  </span>
+                )}
               </button>
             );
           })}
@@ -361,6 +370,12 @@ export function App() {
 
             {/* 3. Real-time Audit Ledger Feed */}
             <AuditLedgerFeed events={auditEvents} onRefreshEvents={loadBackendData} />
+          </div>
+        )}
+
+        {activeTab === 'agent' && (
+          <div className="space-y-8">
+            <LiveGeminiAgentPanel onRefreshData={loadBackendData} />
           </div>
         )}
 

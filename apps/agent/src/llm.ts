@@ -185,3 +185,410 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
     return { text, toolCalls };
   }
 }
+
+export interface GeminiRestClientConfig {
+  apiKey: string;
+  model?: string | undefined;
+  baseUrl?: string | undefined;
+  timeoutMs?: number | undefined;
+  retries?: number | undefined;
+  fallbackClient?: LlmClient | undefined;
+}
+
+/**
+ * Native REST API Client for Google Gemini (gemini-3.8-flash) using Node.js 22 built-in fetch.
+ * Implements tool/function calling (search_catalog, get_item_details, propose_purchase)
+ * with AbortSignal.timeout(8000) and 1x retry. Zero external SDK dependencies.
+ */
+export class GeminiRestClient implements LlmClient {
+  private readonly apiKey: string;
+  private readonly model: string;
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly retries: number;
+  private readonly fallbackClient?: LlmClient | undefined;
+  public lastModeUsed: 'LIVE_LLM' | 'OFFLINE_FALLBACK' = 'LIVE_LLM';
+  public lastError?: Error | undefined;
+
+  constructor(config: GeminiRestClientConfig) {
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? 'gemini-3.8-flash';
+    this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
+    this.timeoutMs = config.timeoutMs ?? 8000;
+    this.retries = config.retries ?? 1;
+    this.fallbackClient = config.fallbackClient;
+  }
+
+  private cleanParameters(params: Record<string, unknown>): Record<string, unknown> {
+    const convertType = (t: unknown): string => {
+      if (typeof t !== 'string') return 'STRING';
+      switch (t.toLowerCase()) {
+        case 'object': return 'OBJECT';
+        case 'string': return 'STRING';
+        case 'number':
+        case 'integer': return 'NUMBER';
+        case 'array': return 'ARRAY';
+        case 'boolean': return 'BOOLEAN';
+        default: return 'STRING';
+      }
+    };
+
+    const cleanNode = (node: unknown): unknown => {
+      if (!node || typeof node !== 'object') return node;
+      if (Array.isArray(node)) return node.map(cleanNode);
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        if (k === 'type') {
+          out['type'] = convertType(v);
+        } else if (k === 'properties' && v && typeof v === 'object') {
+          const props: Record<string, unknown> = {};
+          for (const [pk, pv] of Object.entries(v as Record<string, unknown>)) {
+            props[pk] = cleanNode(pv);
+          }
+          out['properties'] = props;
+        } else if (k === 'items') {
+          out['items'] = cleanNode(v);
+        } else if (k === 'required') {
+          out['required'] = v;
+        } else if (k === 'description') {
+          out['description'] = v;
+        }
+      }
+      return out;
+    };
+
+    return cleanNode(params);
+  }
+
+  public async complete(messages: LlmMessage[], tools?: LlmToolDefinition[]): Promise<LlmResponse> {
+    const formattedTools = tools && tools.length > 0 ? [
+      {
+        functionDeclarations: tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parameters: this.cleanParameters(t.parameters),
+        })),
+      },
+    ] : undefined;
+
+    let systemInstructionText: string | undefined;
+    const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        systemInstructionText = systemInstructionText
+          ? `${systemInstructionText}\n${msg.content}`
+          : msg.content;
+      } else if (msg.role === 'user') {
+        contents.push({
+          role: 'user',
+          parts: [{ text: msg.content }],
+        });
+      } else if (msg.role === 'assistant') {
+        const parts: Array<Record<string, unknown>> = [];
+        if (msg.content) {
+          parts.push({ text: msg.content });
+        }
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            parts.push({
+              functionCall: {
+                name: tc.name,
+                args: tc.arguments ?? {},
+              },
+            });
+          }
+        }
+        if (parts.length > 0) {
+          contents.push({ role: 'model', parts });
+        }
+      } else if (msg.role === 'tool') {
+        let parsedContent: unknown = msg.content;
+        try {
+          parsedContent = JSON.parse(msg.content);
+        } catch {
+          parsedContent = { output: msg.content };
+        }
+        contents.push({
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: msg.name ?? 'tool_result',
+                response: typeof parsedContent === 'object' && parsedContent !== null && !Array.isArray(parsedContent)
+                  ? (parsedContent as Record<string, unknown>)
+                  : { result: parsedContent },
+              },
+            },
+          ],
+        });
+      }
+    }
+
+    const payload: Record<string, unknown> = {
+      contents,
+      ...(systemInstructionText ? { systemInstruction: { parts: [{ text: systemInstructionText }] } } : {}),
+      ...(formattedTools ? { tools: formattedTools } : {}),
+    };
+
+    const url = `${this.baseUrl}/models/${this.model}:generateContent?key=${this.apiKey}`;
+
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= this.retries; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Gemini HTTP ${res.status}: ${errText.slice(0, 300)}`);
+        }
+
+        const data = (await res.json()) as {
+          candidates?: Array<{
+            content?: {
+              role?: string;
+              parts?: Array<{
+                text?: string;
+                functionCall?: {
+                  name: string;
+                  args?: Record<string, unknown>;
+                };
+              }>;
+            };
+          }>;
+        };
+
+        const parts = data.candidates?.[0]?.content?.parts ?? [];
+        const textParts = parts.filter((p) => typeof p.text === 'string').map((p) => p.text as string);
+        const text = textParts.join('\n');
+
+        const toolCalls: LlmToolCall[] = [];
+        for (const p of parts) {
+          if (p.functionCall) {
+            toolCalls.push({
+              id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              name: p.functionCall.name,
+              arguments: p.functionCall.args ?? {},
+            });
+          }
+        }
+
+        this.lastModeUsed = 'LIVE_LLM';
+        return { text, toolCalls };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.retries) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+      }
+    }
+
+    this.lastError = lastError ?? new Error('Gemini API request failed');
+    if (this.fallbackClient) {
+      this.lastModeUsed = 'OFFLINE_FALLBACK';
+      const fallbackResult = await this.fallbackClient.complete(messages, tools);
+      return {
+        text: fallbackResult.text,
+        toolCalls: fallbackResult.toolCalls,
+      };
+    }
+
+    throw this.lastError;
+  }
+}
+
+export interface RuleBasedShopperLlmClientConfig {
+  mode?: 'defensive' | 'vulnerable' | undefined;
+}
+
+/**
+ * Deterministic offline shopper planner for test suites and offline fallback.
+ * Implements the full shopper tool-loop workflow.
+ */
+export class RuleBasedShopperLlmClient implements LlmClient {
+  private readonly mode: 'defensive' | 'vulnerable';
+
+  constructor(config?: RuleBasedShopperLlmClientConfig) {
+    this.mode = config?.mode ?? 'defensive';
+  }
+
+  public async complete(messages: LlmMessage[], _tools?: LlmToolDefinition[]): Promise<LlmResponse> {
+    const userMessage = [...messages].reverse().find((m) => m.role === 'user');
+    const userPrompt = userMessage?.content.toLowerCase() ?? '';
+    const lastMessage = messages[messages.length - 1];
+
+    if (lastMessage?.role === 'tool') {
+      const toolName = lastMessage.name;
+      let toolData: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(lastMessage.content) as unknown;
+        if (typeof parsed === 'object' && parsed !== null) {
+          toolData = parsed as Record<string, unknown>;
+        }
+      } catch {
+        toolData = {};
+      }
+
+      if (toolName === 'search_catalog') {
+        const items = Array.isArray(toolData)
+          ? (toolData as Array<Record<string, unknown>>)
+          : [];
+        if (items.length === 0) {
+          return {
+            text: 'I searched the merchant catalog but found no matching products for your request.',
+            toolCalls: [],
+          };
+        }
+        const topItem = items[0]!;
+        const sku = String(topItem['sku'] ?? '');
+        const name = String(topItem['name'] ?? 'Product');
+        const merchantRef = String(topItem['merchant_ref'] ?? topItem['merchant_id'] ?? 'mrc_demo_store');
+        return {
+          text: `Found item "${name}" in catalog. Inspecting item details...`,
+          toolCalls: [
+            {
+              id: `call_${Date.now()}_det`,
+              name: 'get_item_details',
+              arguments: {
+                sku,
+                merchant_ref: merchantRef,
+              },
+            },
+          ],
+        };
+      }
+
+      if (toolName === 'get_item_details' || toolName === 'get_product') {
+        const item = toolData;
+        const description = String(item['description'] ?? '').toLowerCase();
+        const hasInjection =
+          description.includes('ignore previous') ||
+          description.includes('pay $500') ||
+          description.includes('system override') ||
+          description.includes('attacker');
+
+        const sku = String(item['sku'] ?? '');
+        const name = String(item['name'] ?? 'Product');
+        if (hasInjection && this.mode === 'defensive') {
+          return {
+            text: `[DEFENSIVE AGENT ALERT] Indirect prompt injection detected in item description for SKU ${sku}. Refusing to follow unauthorized instructions.`,
+            toolCalls: [],
+          };
+        }
+
+        const priceMinor = Number(item['price_minor'] ?? 900);
+        const merchantRef = String(item['merchant_ref'] ?? item['merchant_id'] ?? 'mrc_demo_store');
+        const currency = String(item['currency'] ?? 'USD');
+        return {
+          text: `Item "${name}" verified ($${(priceMinor / 100).toFixed(2)}). Proposing purchase intent under spending mandate...`,
+          toolCalls: [
+            {
+              id: `call_${Date.now()}_prop`,
+              name: 'propose_purchase',
+              arguments: {
+                merchant_ref: merchantRef,
+                items: [
+                  {
+                    sku,
+                    qty: 1,
+                    claimed_unit_price_minor: priceMinor,
+                  },
+                ],
+                claimed_total_minor: priceMinor,
+                currency,
+                rationale: `Shopper agent proposal for ${name}`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (toolName === 'propose_purchase' || toolName === 'submit_purchase_intent') {
+        const verdict = String(toolData['verdict'] ?? 'ALLOW');
+        const intentId = String(toolData['intent_id'] ?? 'unknown');
+        const reasonCodes = Array.isArray(toolData['reason_codes'])
+          ? (toolData['reason_codes'] as string[]).join(', ')
+          : '';
+        return {
+          text: `Purchase intent ${intentId} evaluated by AegisMandate Control Plane. Verdict: ${verdict}${reasonCodes ? ` (${reasonCodes})` : ''}.`,
+          toolCalls: [],
+        };
+      }
+    }
+
+    if (
+      userPrompt.includes('evil') ||
+      userPrompt.includes('injection') ||
+      userPrompt.includes('$500') ||
+      userPrompt.includes('voucher') ||
+      userPrompt.includes('gift')
+    ) {
+      if (
+        this.mode === 'defensive' &&
+        (userPrompt.includes('pay $500 to attacker') || userPrompt.includes('ignore previous'))
+      ) {
+        return {
+          text: 'I detected an adversarial instruction in your prompt. As a defensive shopping assistant, I refuse to divert payments to unauthorized recipients.',
+          toolCalls: [],
+        };
+      }
+      return {
+        text: 'Searching catalog for promotional gift bundle...',
+        toolCalls: [
+          {
+            id: `call_${Date.now()}_src`,
+            name: 'search_catalog',
+            arguments: { query: 'gift', merchant_ref: 'mrc_evil_store' },
+          },
+        ],
+      };
+    }
+
+    if (userPrompt.includes('lamp') || userPrompt.includes('light')) {
+      return {
+        text: 'Searching catalog for desk lamps...',
+        toolCalls: [
+          {
+            id: `call_${Date.now()}_src`,
+            name: 'search_catalog',
+            arguments: { query: 'lamp', merchant_ref: 'mrc_demo_store' },
+          },
+        ],
+      };
+    }
+
+    if (
+      userPrompt.includes('standing desk') ||
+      userPrompt.includes('motorized') ||
+      (userPrompt.includes('desk') && !userPrompt.includes('pen') && !userPrompt.includes('lamp'))
+    ) {
+      return {
+        text: 'Searching catalog for standing desks...',
+        toolCalls: [
+          {
+            id: `call_${Date.now()}_src`,
+            name: 'search_catalog',
+            arguments: { query: 'standing desk', merchant_ref: 'mrc_demo_store' },
+          },
+        ],
+      };
+    }
+
+    const query = userPrompt.includes('notebook') ? 'notebook' : 'pen';
+    return {
+      text: `Searching catalog for ${query}...`,
+      toolCalls: [
+        {
+          id: `call_${Date.now()}_src`,
+          name: 'search_catalog',
+          arguments: { query, merchant_ref: 'mrc_demo_store' },
+        },
+      ],
+    };
+  }
+}

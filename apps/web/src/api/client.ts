@@ -34,6 +34,42 @@ export interface MandateResponse {
   };
 }
 
+export interface AgentRunResponse {
+  agent_mode: string;
+  actual_mode_used: 'LIVE_LLM' | 'OFFLINE_FALLBACK';
+  success: boolean;
+  prompt: string;
+  final_text: string;
+  proposal?: {
+    intent_id: string;
+    mandate_id: string;
+    merchant_ref: string;
+    items: Array<{ sku: string; qty: number; claimed_unit_price_minor: number }>;
+    claimed_total_minor: number;
+    currency: string;
+    rationale: string;
+    provenance?: { sources: Array<{ kind: string; ref: string; trust: string }> };
+  } | null;
+  decision?: {
+    verdict: 'ALLOW' | 'STEP_UP' | 'DENY';
+    reason_codes?: string[];
+    intent_id?: string;
+  } | null;
+  execution?: {
+    status?: string;
+    order_id?: string;
+    capture_id?: string;
+    approve_url?: string;
+  } | null;
+  tool_calls_count: number;
+  transcript: Array<{
+    role: string;
+    content: string;
+    name?: string;
+    tool_calls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  }>;
+}
+
 export interface IntentDecision {
   decision_id: string;
   verdict: 'ALLOW' | 'STEP_UP' | 'DENY';
@@ -275,6 +311,27 @@ export class ApiClient {
     const res = await fetch(`${this.baseUrl}/v1/audit/verify`);
     if (!res.ok) throw new Error(`Failed to verify audit ledger (${res.status})`);
     return res.json() as Promise<AuditVerifyResponse>;
+  }
+
+  public async runAgent(params: {
+    prompt: string;
+    mandateId?: string;
+    mode?: 'defensive' | 'vulnerable';
+  }): Promise<AgentRunResponse> {
+    const res = await fetch(`${this.baseUrl}/v1/agent/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: params.prompt,
+        mandate_id: params.mandateId,
+        mode: params.mode,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ message: res.statusText }));
+      throw new Error(body.message || `Agent run failed with status ${res.status}`);
+    }
+    return res.json() as Promise<AgentRunResponse>;
   }
 }
 

@@ -15,6 +15,14 @@ import {
   type PurchaseIntentProposal,
 } from '@mandatepay/schemas';
 import { PayPalClient } from '@mandatepay/paypal';
+import {
+  ShopperAgent,
+  GeminiRestClient,
+  RuleBasedShopperLlmClient,
+  type CatalogService,
+  type ControlPlaneClient,
+  type CatalogItem as AgentCatalogItem,
+} from '@mandatepay/agent';
 import { MandateService, withReadTransaction } from './mandate-service.js';
 import {
   executeGoldenPath,
@@ -205,6 +213,206 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
   };
   app.post('/v1/demo/reset', handleDemoReset);
   app.get('/v1/demo/reset', handleDemoReset);
+
+  // --------------------------------------------------------------------------
+  // Interactive Autonomous Shopper Agent (Gemini REST API / Native fetch)
+  // --------------------------------------------------------------------------
+  app.post('/v1/agent/run', async (request, reply) => {
+    const rawBody = request.body as Record<string, unknown> | undefined;
+    const prompt = typeof rawBody?.['prompt'] === 'string' ? rawBody['prompt'].trim() : '';
+    if (!prompt) {
+      return reply.code(400).send({
+        error: 'MALFORMED',
+        message: 'Prompt is required and must be a non-empty string',
+      });
+    }
+
+    const mandateId =
+      typeof rawBody?.['mandate_id'] === 'string' && rawBody['mandate_id'].trim()
+        ? rawBody['mandate_id'].trim()
+        : 'mnd_demo_001';
+
+    const mode = rawBody?.['mode'] === 'vulnerable' ? 'vulnerable' : 'defensive';
+
+    const geminiApiKey = process.env['GEMINI_API_KEY'] || process.env['LLM_API_KEY'] || '';
+    const configuredModel = process.env['LLM_MODEL'] || 'gemini-3.8-flash';
+
+    const isLive = Boolean(geminiApiKey && geminiApiKey.trim().length > 0);
+    const agentMode = isLive
+      ? `[AGENT_MODE: LIVE_LLM | model=${configuredModel}]`
+      : '[AGENT_MODE: OFFLINE_FALLBACK]';
+
+    const fallbackClient = new RuleBasedShopperLlmClient({ mode });
+    const llmClient = isLive
+      ? new GeminiRestClient({
+          apiKey: geminiApiKey,
+          model: configuredModel,
+          timeoutMs: 8000,
+          retries: 1,
+          fallbackClient,
+        })
+      : fallbackClient;
+
+    const catalogService: CatalogService = {
+      async search(query: string, merchantRef?: string): Promise<AgentCatalogItem[]> {
+        const pattern = `%${query}%`;
+        try {
+          const cols = db.prepare('PRAGMA table_info(catalog_items)').all() as Array<{
+            name: string;
+          }>;
+          const hasDesc = cols.some((c) => c.name === 'description');
+          const descField = hasDesc ? 'description' : "'' AS description";
+          const descCond = hasDesc ? 'OR description LIKE ?' : '';
+
+          const sql = merchantRef
+            ? `SELECT merchant_id, sku, name, category, price_minor, ${descField}
+               FROM catalog_items
+               WHERE merchant_id = ? AND (name LIKE ? OR category LIKE ? OR sku LIKE ? ${descCond})
+               LIMIT 10`
+            : `SELECT merchant_id, sku, name, category, price_minor, ${descField}
+               FROM catalog_items
+               WHERE (name LIKE ? OR category LIKE ? OR sku LIKE ? ${descCond})
+               LIMIT 10`;
+
+          const params = hasDesc
+            ? [pattern, pattern, pattern, pattern]
+            : [pattern, pattern, pattern];
+          const queryParams = merchantRef ? [merchantRef, ...params] : params;
+
+          const stmt = db.prepare(sql);
+          const rows = stmt.all(...queryParams) as Array<{
+            merchant_id: string;
+            sku: string;
+            name: string;
+            category: string;
+            price_minor: number;
+            description: string;
+          }>;
+
+          return rows.map((r) => ({
+            sku: r.sku,
+            name: r.name,
+            category: r.category,
+            price_minor: r.price_minor,
+            description: r.description,
+            merchant_ref: r.merchant_id,
+          }));
+        } catch {
+          return [];
+        }
+      },
+
+      async getItem(sku: string, merchantRef: string): Promise<AgentCatalogItem | null> {
+        try {
+          const cols = db.prepare('PRAGMA table_info(catalog_items)').all() as Array<{
+            name: string;
+          }>;
+          const hasDesc = cols.some((c) => c.name === 'description');
+          const descField = hasDesc ? 'description' : "'' AS description";
+
+          const stmt = db.prepare(`
+            SELECT merchant_id, sku, name, category, price_minor, ${descField}
+            FROM catalog_items
+            WHERE sku = ? AND merchant_id = ?
+            LIMIT 1
+          `);
+          const row = stmt.get(sku, merchantRef) as
+            | {
+                merchant_id: string;
+                sku: string;
+                name: string;
+                category: string;
+                price_minor: number;
+                description: string;
+              }
+            | undefined;
+
+          if (!row) return null;
+          return {
+            sku: row.sku,
+            name: row.name,
+            category: row.category,
+            price_minor: row.price_minor,
+            description: row.description,
+            merchant_ref: row.merchant_id,
+          };
+        } catch {
+          return null;
+        }
+      },
+    };
+
+    let executedResult: {
+      status?: string | undefined;
+      orderId?: string | undefined;
+      captureId?: string | undefined;
+      approveUrl?: string | undefined;
+    } | null = null;
+
+    const controlPlaneClient: ControlPlaneClient = {
+      async submitProposal(proposal: PurchaseIntentProposal) {
+        const res = await executeGoldenPath({
+          proposal,
+          rawJson: JSON.stringify(proposal),
+          payPalClient,
+          mandateService,
+          catalogResolver,
+          db,
+          hmacKey,
+          now: getNow(),
+        });
+        executedResult = {
+          status: res.status,
+          orderId: res.orderId,
+          captureId: res.captureId,
+          approveUrl: res.approveUrl,
+        };
+        return {
+          verdict: res.verdict,
+          reason_codes: res.decision?.reason_codes,
+          intent_id: res.intentId,
+        };
+      },
+
+      async checkStatus(intentId: string) {
+        try {
+          const stmt = db.prepare('SELECT status, decision_verdict FROM intents WHERE id = ?');
+          const row = stmt.get(intentId) as { status: string; decision_verdict: string } | undefined;
+          return {
+            status: row?.status ?? 'UNKNOWN',
+            verdict: row?.decision_verdict,
+          };
+        } catch {
+          return { status: 'UNKNOWN' };
+        }
+      },
+    };
+
+    const shopper = new ShopperAgent({
+      mandateId,
+      llmClient,
+      catalogService,
+      controlPlaneClient,
+      mode,
+      currency: 'USD',
+    });
+
+    const runResult = await shopper.runShoppingGoal(prompt);
+
+    return reply.code(200).send({
+      agent_mode: agentMode,
+      actual_mode_used:
+        llmClient instanceof GeminiRestClient ? llmClient.lastModeUsed : 'OFFLINE_FALLBACK',
+      success: runResult.success,
+      prompt,
+      final_text: runResult.finalText,
+      proposal: runResult.proposal,
+      decision: runResult.decision,
+      execution: executedResult,
+      tool_calls_count: runResult.toolCallsCount,
+      transcript: runResult.transcript,
+    });
+  });
 
   // --------------------------------------------------------------------------
   // Purchase Intent Proposal (FR-7, FR-8, FR-10, FR-11, FR-26)

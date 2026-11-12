@@ -32,6 +32,8 @@
     "demo:prep": "tsx scripts/demo-prep.ts",
     "demo:seed": "tsx scripts/demo-seed.ts",
     "demo:tamper": "tsx scripts/demo-tamper.ts",
+    "demo:judge": "node scripts/demo-judge.mjs",
+    "verify:ledger": "node scripts/demo-judge.mjs",
     "verify-fresh-clone": "bash scripts/verify-fresh-clone.sh"
   },
   "dependencies": {

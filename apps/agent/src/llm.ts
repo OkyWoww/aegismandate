@@ -257,7 +257,7 @@ export class GeminiRestClient implements LlmClient {
       return out;
     };
 
-    return cleanNode(params);
+    return cleanNode(params) as Record<string, unknown>;
   }
 
   public async complete(messages: LlmMessage[], tools?: LlmToolDefinition[]): Promise<LlmResponse> {

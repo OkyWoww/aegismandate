@@ -17,12 +17,16 @@ async function main() {
   const mandateService = new MandateService(db, hmacKey);
   const catalogResolver: StoreCatalogResolver = {
     getMerchantPayee(ref: string) {
-      const row = db.prepare('SELECT paypal_payee_ref, name FROM merchants WHERE id = ?').get(ref) as any;
+      const row = db.prepare('SELECT paypal_payee_ref, name FROM merchants WHERE id = ?').get(ref) as
+        | { paypal_payee_ref: string; name: string }
+        | undefined;
       if (!row) return null;
       return { payeeRef: row.paypal_payee_ref, merchantId: ref, name: row.name };
     },
     getItem(merchantRef: string, sku: string) {
-      const row = db.prepare('SELECT price_minor, name, category FROM catalog_items WHERE merchant_id = ? AND sku = ?').get(merchantRef, sku) as any;
+      const row = db
+        .prepare('SELECT price_minor, name, category FROM catalog_items WHERE merchant_id = ? AND sku = ?')
+        .get(merchantRef, sku) as { price_minor: number; name: string; category: string } | undefined;
       if (!row) return null;
       return { verified: true, priceMinor: row.price_minor, name: row.name, category: row.category };
     },

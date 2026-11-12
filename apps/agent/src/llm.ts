@@ -4,6 +4,7 @@ export interface LlmToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  thoughtSignature?: string | undefined;
 }
 
 export interface LlmMessage {
@@ -198,7 +199,7 @@ export interface GeminiRestClientConfig {
 /**
  * Native REST API Client for Google Gemini (gemini-3.8-flash) using Node.js 22 built-in fetch.
  * Implements tool/function calling (search_catalog, get_item_details, propose_purchase)
- * with AbortSignal.timeout(8000) and 1x retry. Zero external SDK dependencies.
+ * with AbortSignal.timeout(20000) and 1x retry. Zero external SDK dependencies.
  */
 export class GeminiRestClient implements LlmClient {
   private readonly apiKey: string;
@@ -208,15 +209,17 @@ export class GeminiRestClient implements LlmClient {
   private readonly retries: number;
   private readonly fallbackClient?: LlmClient | undefined;
   public lastModeUsed: 'LIVE_LLM' | 'OFFLINE_FALLBACK' = 'LIVE_LLM';
+  public activeLiveModel: string = 'gemini-3.8-flash';
   public lastError?: Error | undefined;
 
   constructor(config: GeminiRestClientConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? 'gemini-3.8-flash';
     this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
-    this.timeoutMs = config.timeoutMs ?? 8000;
+    this.timeoutMs = config.timeoutMs ?? 20000;
     this.retries = config.retries ?? 1;
     this.fallbackClient = config.fallbackClient;
+    this.activeLiveModel = this.model;
   }
 
   private cleanParameters(params: Record<string, unknown>): Record<string, unknown> {
@@ -291,12 +294,16 @@ export class GeminiRestClient implements LlmClient {
         }
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
-            parts.push({
+            const partObj: Record<string, unknown> = {
               functionCall: {
                 name: tc.name,
                 args: tc.arguments ?? {},
               },
-            });
+            };
+            if (tc.thoughtSignature) {
+              partObj['thoughtSignature'] = tc.thoughtSignature;
+            }
+            parts.push(partObj);
           }
         }
         if (parts.length > 0) {
@@ -309,15 +316,18 @@ export class GeminiRestClient implements LlmClient {
         } catch {
           parsedContent = { output: msg.content };
         }
+        const responseObj: Record<string, unknown> =
+          typeof parsedContent === 'object' && parsedContent !== null && !Array.isArray(parsedContent)
+            ? (parsedContent as Record<string, unknown>)
+            : { output: parsedContent };
+
         contents.push({
           role: 'user',
           parts: [
             {
               functionResponse: {
                 name: msg.name ?? 'tool_result',
-                response: typeof parsedContent === 'object' && parsedContent !== null && !Array.isArray(parsedContent)
-                  ? (parsedContent as Record<string, unknown>)
-                  : { result: parsedContent },
+                response: responseObj,
               },
             },
           ],
@@ -331,65 +341,106 @@ export class GeminiRestClient implements LlmClient {
       ...(formattedTools ? { tools: formattedTools } : {}),
     };
 
-    const url = `${this.baseUrl}/models/${this.model}:generateContent?key=${this.apiKey}`;
+    const candidateModels = [
+      this.model,
+      'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+    ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt <= this.retries; attempt++) {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Gemini HTTP ${res.status}: ${errText.slice(0, 300)}`);
-        }
+    for (const model of candidateModels) {
+      const url = `${this.baseUrl}/models/${model}:generateContent?key=${this.apiKey}`;
+      const headers = {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': this.apiKey,
+      };
 
-        const data = (await res.json()) as {
-          candidates?: Array<{
-            content?: {
-              role?: string;
-              parts?: Array<{
-                text?: string;
-                functionCall?: {
-                  name: string;
-                  args?: Record<string, unknown>;
-                };
-              }>;
-            };
-          }>;
-        };
+      for (let attempt = 0; attempt <= this.retries; attempt++) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(this.timeoutMs),
+          });
 
-        const parts = data.candidates?.[0]?.content?.parts ?? [];
-        const textParts = parts.filter((p) => typeof p.text === 'string').map((p) => p.text as string);
-        const text = textParts.join('\n');
-
-        const toolCalls: LlmToolCall[] = [];
-        for (const p of parts) {
-          if (p.functionCall) {
-            toolCalls.push({
-              id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-              name: p.functionCall.name,
-              arguments: p.functionCall.args ?? {},
-            });
+          if (!res.ok) {
+            const errText = await res.text();
+            console.error(
+              `[GeminiRestClient] Request to ${model} failed (attempt ${attempt + 1}/${this.retries + 1}, HTTP ${res.status}): ${errText}`
+            );
+            if (res.status === 429 || res.status === 503) {
+              lastError = new Error(`Gemini HTTP ${res.status} on ${model}: ${errText.slice(0, 300)}`);
+              break;
+            }
+            throw new Error(`Gemini HTTP ${res.status}: ${errText.slice(0, 300)}`);
           }
-        }
 
-        this.lastModeUsed = 'LIVE_LLM';
-        return { text, toolCalls };
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        if (attempt < this.retries) {
-          await new Promise((resolve) => setTimeout(resolve, 300));
+          const data = (await res.json()) as {
+            candidates?: Array<{
+              content?: {
+                role?: string;
+                parts?: Array<{
+                  text?: string;
+                  functionCall?: {
+                    name: string;
+                    args?: Record<string, unknown>;
+                  };
+                }>;
+              };
+            }>;
+          };
+
+          const parts = (data.candidates?.[0]?.content?.parts ?? []) as Array<{
+            text?: string;
+            functionCall?: {
+              id?: string;
+              name: string;
+              args?: Record<string, unknown>;
+            };
+            thoughtSignature?: string;
+            thought_signature?: string;
+          }>;
+          const textParts = parts.filter((p) => typeof p.text === 'string').map((p) => p.text as string);
+          const text = textParts.join('\n');
+
+          const toolCalls: LlmToolCall[] = [];
+          for (const p of parts) {
+            if (p.functionCall) {
+              const sig = p.thoughtSignature ?? p.thought_signature;
+              toolCalls.push({
+                id:
+                  p.functionCall.id ??
+                  `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                name: p.functionCall.name,
+                arguments: p.functionCall.args ?? {},
+                ...(sig ? { thoughtSignature: sig } : {}),
+              });
+            }
+          }
+
+          this.lastModeUsed = 'LIVE_LLM';
+          this.activeLiveModel = model;
+          return { text, toolCalls };
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          console.error(
+            `[GeminiRestClient] Fetch exception on ${model} (attempt ${attempt + 1}): ${lastError.name} - ${lastError.message}`
+          );
+          if (attempt < this.retries) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
         }
       }
     }
 
     this.lastError = lastError ?? new Error('Gemini API request failed');
     if (this.fallbackClient) {
+      console.warn(
+        `[GeminiRestClient] All live model attempts exhausted. Falling back to offline shopper planner.`
+      );
       this.lastModeUsed = 'OFFLINE_FALLBACK';
       const fallbackResult = await this.fallbackClient.complete(messages, tools);
       return {

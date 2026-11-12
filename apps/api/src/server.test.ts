@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { type FastifyInstance } from 'fastify';
 import { openDb, type DatabaseConnection } from '@mandatepay/audit';
 import { PayPalClient } from '@mandatepay/paypal';
@@ -1194,6 +1194,21 @@ describe('Fastify HTTP API Server (Task T-014, specs/spec.md §2, tech.md §3, �
   });
 
   describe('POST /v1/agent/run (Autonomous Shopper Agent)', () => {
+    const originalApiKey = process.env['GEMINI_API_KEY'];
+    const originalLlmKey = process.env['LLM_API_KEY'];
+    beforeAll(() => {
+      delete process.env['GEMINI_API_KEY'];
+      delete process.env['LLM_API_KEY'];
+    });
+    afterAll(() => {
+      if (originalApiKey !== undefined) {
+        process.env['GEMINI_API_KEY'] = originalApiKey;
+      }
+      if (originalLlmKey !== undefined) {
+        process.env['LLM_API_KEY'] = originalLlmKey;
+      }
+    });
+
     it('returns 400 when prompt is missing or empty', async () => {
       const res = await server.inject({
         method: 'POST',

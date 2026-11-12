@@ -238,16 +238,13 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     const configuredModel = process.env['LLM_MODEL'] || 'gemini-3.8-flash';
 
     const isLive = Boolean(geminiApiKey && geminiApiKey.trim().length > 0);
-    const agentMode = isLive
-      ? `[AGENT_MODE: LIVE_LLM | model=${configuredModel}]`
-      : '[AGENT_MODE: OFFLINE_FALLBACK]';
 
     const fallbackClient = new RuleBasedShopperLlmClient({ mode });
     const llmClient = isLive
       ? new GeminiRestClient({
           apiKey: geminiApiKey,
           model: configuredModel,
-          timeoutMs: 8000,
+          timeoutMs: 20000,
           retries: 1,
           fallbackClient,
         })
@@ -399,10 +396,18 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
 
     const runResult = await shopper.runShoppingGoal(prompt);
 
+    const actualModeUsed =
+      llmClient instanceof GeminiRestClient ? llmClient.lastModeUsed : 'OFFLINE_FALLBACK';
+    const agentMode =
+      actualModeUsed === 'LIVE_LLM'
+        ? `[AGENT_MODE: LIVE_LLM | model=${configuredModel}]`
+        : '[AGENT_MODE: OFFLINE_FALLBACK]';
+
     return reply.code(200).send({
       agent_mode: agentMode,
-      actual_mode_used:
-        llmClient instanceof GeminiRestClient ? llmClient.lastModeUsed : 'OFFLINE_FALLBACK',
+      actual_mode_used: actualModeUsed,
+      active_model:
+        llmClient instanceof GeminiRestClient ? llmClient.activeLiveModel : undefined,
       success: runResult.success,
       prompt,
       final_text: runResult.finalText,

@@ -38,11 +38,15 @@ import {
   reconcileCapturingIntents,
 } from './executor.js';
 import { buildServer } from './server.js';
-import { initMerchantAndCatalogSchema, seedStoresAndMandate } from './demo-seed.js';
+import {
+  initMerchantAndCatalogSchema,
+  ensureDemoMandateActive,
+} from './demo-seed.js';
 
 export * from './mandate-service.js';
 export * from './executor.js';
 export * from './server.js';
+export * from './demo-seed.js';
 
 export interface StartServerOptions {
   port?: number | undefined;
@@ -71,14 +75,8 @@ export async function startServer(options: StartServerOptions = {}) {
   initExecutorTables(db);
   initMerchantAndCatalogSchema(db);
 
-  // Auto-seed if database is fresh (merchants or demo mandate missing)
-  const existingMerchant = db.prepare('SELECT id FROM merchants LIMIT 1').get();
-  const existingMandate = db.prepare("SELECT id FROM mandates WHERE id = 'mnd_demo_001'").get();
-  if (!existingMerchant || !existingMandate) {
-    console.log('[Seed] Fresh database detected. Seeding demo merchants, catalog, and mnd_demo_001...');
-    seedStoresAndMandate(db, hmacKey, new Date());
-    console.log('[Seed] Demo data seeded successfully.');
-  }
+  // Ensure demo merchants, catalog, and mnd_demo_001 are active and unexpired (auto-renews if expired/missing)
+  ensureDemoMandateActive(db, hmacKey, new Date());
 
   const catalogResolver: StoreCatalogResolver = {
     getMerchantPayee: (ref: string) => {

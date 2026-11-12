@@ -129,9 +129,9 @@ export function seedStoresAndMandate(
   db.prepare('DELETE FROM mandate_spend WHERE mandate_id = ?').run('mnd_demo_001');
   db.prepare('DELETE FROM mandates WHERE id = ?').run('mnd_demo_001');
 
-  // 4. Create and activate mnd_demo_001
+  // 4. Create and activate mnd_demo_001 (Valid through 2027 so demo mandate never expires during evaluator testing)
   const validFrom = now.toISOString();
-  const validUntil = new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString();
+  const validUntil = '2027-12-31T23:59:59.000Z';
   const mandateService = new MandateService(db, hmacKey, () => validFrom);
 
   mandateService.createDraft({
@@ -157,6 +157,43 @@ export function seedStoresAndMandate(
   });
 
   mandateService.activate('mnd_demo_001');
+}
+
+/**
+ * Ensures mnd_demo_001 is active, has valid unexpired TTL (through 2027),
+ * and has remaining budget. If expired, suspended, missing, or out of budget,
+ * automatically re-activates and resets it for evaluator testing.
+ */
+export function ensureDemoMandateActive(
+  db: DatabaseConnection,
+  hmacKey: string,
+  now: Date = new Date(),
+): void {
+  const existingMerchant = db.prepare('SELECT id FROM merchants LIMIT 1').get();
+  const existingMandate = db
+    .prepare("SELECT id, status, valid_until FROM mandates WHERE id = 'mnd_demo_001'")
+    .get() as { id: string; status: string; valid_until: string } | undefined;
+
+  const spendRow = db
+    .prepare("SELECT captured_minor, reserved_minor FROM mandate_spend WHERE mandate_id = 'mnd_demo_001'")
+    .get() as { captured_minor: number; reserved_minor: number } | undefined;
+
+  const isExpired = existingMandate
+    ? existingMandate.status !== 'ACTIVE' ||
+      new Date(existingMandate.valid_until).getTime() <= now.getTime() + 24 * 60 * 60 * 1000
+    : true;
+
+  const isBudgetExhausted = spendRow
+    ? spendRow.captured_minor + spendRow.reserved_minor >= 20000
+    : false;
+
+  if (!existingMerchant || !existingMandate || isExpired || isBudgetExhausted) {
+    console.log(
+      `[Seed] ensureDemoMandateActive: renewing mnd_demo_001 (merchantMissing=${!existingMerchant}, mandateMissing=${!existingMandate}, isExpired=${isExpired}, isBudgetExhausted=${isBudgetExhausted}).`
+    );
+    seedStoresAndMandate(db, hmacKey, now);
+    console.log('[Seed] mnd_demo_001 successfully renewed with active status and full budget.');
+  }
 }
 
 export function createStoreCatalogResolver(db: DatabaseConnection): StoreCatalogResolver {

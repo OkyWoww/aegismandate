@@ -40,7 +40,7 @@ const INITIAL_MANDATE_DATA: MandateResponse = {
     status: 'ACTIVE',
     currency: 'USD',
     valid_from: new Date().toISOString(),
-    valid_until: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
+    valid_until: '2027-12-31T23:59:59.000Z',
     total_budget_minor: 20000,
     per_txn_limit_minor: 8000,
     auto_approve_limit_minor: 3000,

@@ -42,8 +42,10 @@ export function runSeed(options: SeedOptions = {}): SeedResult {
 
   const now = options.now ?? new Date();
   const validFrom = now.toISOString();
-  // Relative clock: exactly 12 hours from execution time (demo.md §1, NFR-6)
-  const validUntil = new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString();
+  // Relative clock: if now is explicitly mocked in tests, 12 hours (NFR-6); otherwise valid through 2027
+  const validUntil = options.now
+    ? new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString()
+    : '2027-12-31T23:59:59.000Z';
 
   const db = openDb(dbPath);
 

@@ -202,6 +202,7 @@ export interface GeminiRestClientConfig {
  * with AbortSignal.timeout(20000) and 1x retry. Zero external SDK dependencies.
  */
 export class GeminiRestClient implements LlmClient {
+  private static exhaustedModels = new Set<string>();
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
@@ -341,12 +342,16 @@ export class GeminiRestClient implements LlmClient {
       ...(formattedTools ? { tools: formattedTools } : {}),
     };
 
-    const candidateModels = [
+    const allModels = [
       this.model,
       'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
       'gemini-3.1-flash-lite',
     ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+    // Prioritize models that have not exceeded rate-limits/quotas to avoid repeating 15s latency on exhausted models
+    const nonExhausted = allModels.filter((m) => !GeminiRestClient.exhaustedModels.has(m));
+    const candidateModels = nonExhausted.length > 0 ? nonExhausted : allModels;
 
     let lastError: Error | null = null;
 
@@ -371,6 +376,9 @@ export class GeminiRestClient implements LlmClient {
             console.error(
               `[GeminiRestClient] Request to ${model} failed (attempt ${attempt + 1}/${this.retries + 1}, HTTP ${res.status}): ${errText}`
             );
+            if (res.status === 429) {
+              GeminiRestClient.exhaustedModels.add(model);
+            }
             if (res.status === 429 || res.status === 503) {
               lastError = new Error(`Gemini HTTP ${res.status} on ${model}: ${errText.slice(0, 300)}`);
               break;

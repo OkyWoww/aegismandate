@@ -39,7 +39,7 @@ async function main() {
     console.log(`  - [${item.merchant_id}] ${item.sku}: "${item.name}" - $${formattedPrice} (${item.price_minor} cents, ${item.category})`);
   }
 
-  console.log(`\n[Mandate] Seeded active Demo Mandate (Relative-Clock 12h TTL):`);
+  console.log(`\n[Mandate] Seeded active Demo Mandate (Valid through 2027):`);
   console.log(`  - ID: ${result.mandate.mandate_id}`);
   console.log(`  - Owner: ${result.mandate.owner_id} | Agent: ${result.mandate.agent_id}`);
   console.log(`  - Status: ${result.mandate.status}`);

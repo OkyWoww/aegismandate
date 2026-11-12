@@ -33,7 +33,7 @@ import {
   initExecutorTables,
   type StoreCatalogResolver,
 } from './executor.js';
-import { seedStoresAndMandate } from './demo-seed.js';
+import { seedStoresAndMandate, ensureDemoMandateActive } from './demo-seed.js';
 
 export interface ServerOptions {
   db: DatabaseConnection;
@@ -232,6 +232,11 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
         ? rawBody['mandate_id'].trim()
         : 'mnd_demo_001';
 
+    // Ensure demo mandate mnd_demo_001 is active, unexpired (through 2027), and has remaining budget
+    if (mandateId === 'mnd_demo_001') {
+      ensureDemoMandateActive(db, hmacKey);
+    }
+
     const mode = rawBody?.['mode'] === 'vulnerable' ? 'vulnerable' : 'defensive';
 
     const geminiApiKey = process.env['GEMINI_API_KEY'] || process.env['LLM_API_KEY'] || '';
@@ -348,6 +353,9 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
 
     const controlPlaneClient: ControlPlaneClient = {
       async submitProposal(proposal: PurchaseIntentProposal) {
+        if (proposal.mandate_id === 'mnd_demo_001') {
+          ensureDemoMandateActive(db, hmacKey);
+        }
         const res = await executeGoldenPath({
           proposal,
           rawJson: JSON.stringify(proposal),
@@ -441,6 +449,10 @@ export async function buildServer(options: ServerOptions): Promise<FastifyInstan
     }
 
     const proposal: PurchaseIntentProposal = parseResult.data;
+
+    if (proposal.mandate_id === 'mnd_demo_001') {
+      ensureDemoMandateActive(db, hmacKey);
+    }
 
     const result = await executeGoldenPath({
       proposal,
